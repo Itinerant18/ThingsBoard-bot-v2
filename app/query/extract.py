@@ -32,10 +32,41 @@ class KeywordIntentExtractor:
             return any(w in text for w in words)
 
         cctv = "cctv" in text or "camera" in text
+        bas = bool(re.search(r"\bbas\b", text))
+
+        # SPECIFIC BEFORE GENERIC. This is an ordered chain, so every branch below is
+        # unreachable once a broader one above matches. Three collisions found by test:
+        #   "bas power status"       -> would hit the generic "power" branch
+        #   "how many connected devices" -> would hit the generic "how many" count
+        #   "bas panel state"        -> would hit the generic subsystem branch
+        if bas and has("zone"):
+            intent = "bas_zone_info"
+        elif bas and has("panel", "heartbeat", "mode"):
+            intent = "bas_panel_info"
+        elif bas and has("power", "voltage", "current"):
+            intent = "bas_power_status"
+        elif has("sos"):
+            intent = "sos_status"
+        elif has("connected device", "devices connected", "no of connected"):
+            intent = "connected_devices"
+        elif has("network", "operator", "sim card", "signal strength"):
+            intent = "network_status"
+        elif has("door"):
+            intent = "door_status"
+        elif cctv and has("storage", "capacity", "free space", "disk space"):
+            intent = "cctv_storage"
+        elif cctv and has("sd record", "sd card"):
+            intent = "cctv_sd_recording"
+        elif cctv and has("tamper", "disconnect"):
+            intent = "cctv_tamper_count"
+        elif cctv and has("how many", "total number", "count of", "number of"):
+            intent = "cctv_camera_count"
+        elif cctv and has("camera info", "camera detail", "camera list", "channel"):
+            intent = "cctv_camera_info"
         # "how many …" wants a count (global_overview); "list/show/which …" wants the
         # names (device_inventory). Count is checked first so "how many branches do you
         # list" is still a count.
-        if has("how many", "count of", "total number") and not cctv:
+        elif has("how many", "count of", "total number") and not cctv:
             intent = "global_overview"
         elif has("inventory", "list device", "list branch", "list my", "show me the branch",
                  "which branch", "what branch", "name the branch", "all branches"):

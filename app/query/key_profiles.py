@@ -140,6 +140,25 @@ INTENT_KEYS: dict[str, list[str]] = {
         "timeLock.systemStatus",
         "accessControl.systemStatus",
     ],
+    # doc: "SOS Status", "Devices Connected"
+    "sos_status": ["statusbox_sos_status"],
+    "connected_devices": [
+        "statusbox_no_of_connected_device",
+        "system_status.statusbox_no_of_connected_device",
+    ],
+    # doc: "Cctv storage status" (sum of HDDCapacity) and "Total Camera"
+    "cctv_storage": ["rock.HddINFO"],
+    "cctv_camera_count": ["rock.VIDEOdETAILS", "rock.CAMERAdETAILS"],
+    "cctv_camera_info": ["rock.CAMERAdETAILS"],
+    "cctv_sd_recording": ["rock.SdRecINFO"],
+    "cctv_tamper_count": ["cameraTamperCount", "cameraDisconnectCount"],
+    # doc: basSystemIntegration.*
+    "bas_panel_info": [
+        "basSystemIntegration.basMainInfo",
+        "basSystemIntegration.basAboutDevice",
+    ],
+    "bas_power_status": ["basSystemIntegration.basPowerStatus"],
+    "bas_zone_info": ["basSystemIntegration.zoneInfo"],
     # Not covered by the key doc; kept so the intents still fetch something. Revisit
     # when the doc grows an access-control section rather than guessing more names.
     "fault_reason": ["Device_Issue"],

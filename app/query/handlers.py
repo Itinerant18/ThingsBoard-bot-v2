@@ -13,7 +13,7 @@ from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
 from app.normalization.flatten import expand_containers, request_keys
 from app.normalization.snapshot import BranchSnapshot
-from app.query import cctv
+from app.query import cctv, derived
 from app.query.answer_support import (
     LADDER_KEYS,
     first_non_blank,
@@ -179,6 +179,19 @@ METRIC_INTENTS = frozenset(
         "cctv_recording_info",
         "device_hardware",
         "subsystem_status",
+        # Added with the key-doc slice; all answered by derived.py computations.
+        "network_status",
+        "sos_status",
+        "connected_devices",
+        "door_status",
+        "cctv_storage",
+        "cctv_camera_count",
+        "cctv_camera_info",
+        "cctv_sd_recording",
+        "cctv_tamper_count",
+        "bas_panel_info",
+        "bas_power_status",
+        "bas_zone_info",
     }
 )
 
@@ -434,6 +447,93 @@ def _format_metric(intent: ExtractedIntent, snap: BranchSnapshot, device_id: str
             {"cpu": h.cpu, "memory": h.memory, "disk": h.disk, "temperature": h.temperature},
             src,
         )
+
+    # --- intents computed from the key doc rather than a snapshot field ---------
+    raw = snap.raw_data
+
+    if name == "network_status":
+        net = derived.network_status(raw)
+        return Answer(
+            f"Network is {net['status']} (operator: {net['operator']}).", net, src
+        )
+
+    if name == "sos_status":
+        sos = derived.sos_status(raw)
+        if sos is None:
+            return Answer("SOS status is not being reported for this device.", {}, src)
+        return Answer(f"SOS status: {sos}.", {"sos_status": sos}, src)
+
+    if name == "connected_devices":
+        count = derived.connected_devices(raw)
+        if count is None:
+            return Answer("Connected-device count is not being reported.", {}, src)
+        return Answer(f"{count} device(s) connected.", {"connected_devices": count}, src)
+
+    if name == "door_status":
+        doors = derived.door_status(raw)
+        parts = [f"{k.replace('_', ' ')}: {v}" for k, v in doors.items() if v]
+        if not parts:
+            return Answer("No door status is being reported for this device.", doors, src)
+        return Answer("Door status — " + ", ".join(parts) + ".", doors, src)
+
+    if name == "cctv_storage":
+        total = derived.hdd_total_capacity(raw)
+        free = derived.hdd_free_space(raw)
+        if total is None:
+            return Answer("No CCTV storage capacity is being reported.", {}, src)
+        text = f"CCTV storage: {total:g} total"
+        if free is not None:
+            text += f", {free:g} free"
+        return Answer(
+            text + f" across {len(derived.hdd_rows(raw))} disk(s).",
+            {"total_capacity": total, "free_space": free},
+            src,
+        )
+
+    if name == "cctv_camera_count":
+        count = derived.camera_count(raw)
+        return Answer(f"{count} camera(s) on this device.", {"camera_count": count}, src)
+
+    if name == "cctv_camera_info":
+        rows = derived.camera_rows(raw)
+        return Answer(derived.summarize("Camera information", rows), {"cameras": rows}, src)
+
+    if name == "cctv_sd_recording":
+        rows = derived.sd_recording_rows(raw)
+        return Answer(
+            derived.summarize("SD recording information", rows), {"sd_recording": rows}, src
+        )
+
+    if name == "cctv_tamper_count":
+        tamper = derived.camera_tamper_count(raw)
+        disconnect = derived.camera_disconnect_count(raw)
+        return Answer(
+            f"Camera tamper count: {tamper if tamper is not None else 'not reported'}, "
+            f"disconnect count: {disconnect if disconnect is not None else 'not reported'}.",
+            {"tamper_count": tamper, "disconnect_count": disconnect},
+            src,
+        )
+
+    if name == "bas_panel_info":
+        panel = derived.bas_panel(raw)
+        device = derived.bas_device(raw)
+        parts = [f"{k.replace('_', ' ')}: {v}" for k, v in {**panel, **device}.items() if v]
+        if not parts:
+            return Answer("No BAS panel information is being reported.", {}, src)
+        return Answer(
+            "BAS panel — " + ", ".join(parts) + ".", {"panel": panel, "device": device}, src
+        )
+
+    if name == "bas_power_status":
+        power = derived.bas_power(raw)
+        parts = [f"{k.replace('_', ' ')}: {v}" for k, v in power.items() if v]
+        if not parts:
+            return Answer("No BAS power status is being reported.", power, src)
+        return Answer("BAS power — " + ", ".join(parts) + ".", power, src)
+
+    if name == "bas_zone_info":
+        zones = derived.bas_zones(raw)
+        return Answer(derived.summarize("BAS zone information", zones), {"zones": zones}, src)
 
     if name == "subsystem_status":
         return _format_subsystem(intent, snap, src)
