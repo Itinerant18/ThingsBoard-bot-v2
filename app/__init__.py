@@ -1,0 +1,1 @@
+"""ThingsBoard chatbot application."""
