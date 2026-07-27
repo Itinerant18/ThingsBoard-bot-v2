@@ -32,20 +32,58 @@ CONCURRENCY = 2  # above this ThingsBoard returns 429 for this pattern
 MAX_ATTEMPTS = 5
 
 
-async def _history(tb: ThingsBoardClient, device_id: str, start_ms: int, end_ms: int) -> Any:
-    """Timeseries history with 429-aware backoff, honouring Retry-After."""
+KEY_BATCH = 40  # keeps the querystring well inside ThingsBoard's URL limits
+POINT_LIMIT = 10000  # 50000 is rejected with 400
+
+
+async def _get_with_retry(tb: ThingsBoardClient, path: str, params: dict[str, Any]) -> Any:
+    """GET with 429-aware backoff, honouring Retry-After."""
     delay = 2.0
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            return await tb.telemetry(device_id, start_ts=start_ms, end_ts=end_ms)
+            return await tb._get(path, params)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 429 or attempt == MAX_ATTEMPTS:
                 raise
             wait = float(exc.response.headers.get("Retry-After") or delay)
-            logger.warning("429 for %s; retrying in %.1fs", device_id, wait)
+            logger.warning("429 on %s; retrying in %.1fs", path, wait)
             await asyncio.sleep(wait)
             delay *= 2
     return None
+
+
+async def _history(tb: ThingsBoardClient, device_id: str, start_ms: int, end_ms: int) -> Any:
+    """Historical timeseries for every key the device declares.
+
+    ThingsBoard returns {} for a keyless historical query, so the key list must be
+    fetched first and passed explicitly — the original version omitted it and
+    silently backfilled nothing.
+
+    NOTE: only TIMESERIES keys have history. Most fleet state arrives as ATTRIBUTES,
+    which ThingsBoard stores as current-value-only, so there is nothing to recover
+    for them — device_telemetry is the only place that history will ever exist.
+    """
+    base = f"/api/plugins/telemetry/DEVICE/{device_id}"
+    keys = await _get_with_retry(tb, f"{base}/keys/timeseries", {})
+    if not isinstance(keys, list) or not keys:
+        return {}
+
+    merged: dict[str, Any] = {}
+    for start in range(0, len(keys), KEY_BATCH):
+        batch = [str(k) for k in keys[start : start + KEY_BATCH]]
+        got = await _get_with_retry(
+            tb,
+            f"{base}/values/timeseries",
+            {
+                "keys": ",".join(batch),
+                "startTs": start_ms,
+                "endTs": end_ms,
+                "limit": POINT_LIMIT,
+            },
+        )
+        if isinstance(got, dict):
+            merged.update(got)
+    return merged
 
 
 async def backfill_device(
