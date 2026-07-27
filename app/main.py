@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -26,8 +28,24 @@ from app.tasks.reconcile import reconcile_all
 from app.tasks.scheduler import run_periodic
 
 
+def configure_logging() -> None:
+    """Give the app's own loggers a handler.
+
+    Uvicorn configures only its own loggers and leaves root at WARNING, so every
+    app-level logger.info ([LIVE-SYNC], [REPLAY], [SCHEDULER]) was dropped before
+    reaching container stdout — a healthy sync looked identical to one that never
+    ran. force=True because uvicorn may already have touched the root handlers.
+    """
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create the FastAPI app; tests pass custom settings."""
+    configure_logging()
     test_settings = settings or get_settings()
 
     @asynccontextmanager
