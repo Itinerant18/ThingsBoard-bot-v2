@@ -11,9 +11,14 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-# ThingsBoard page APIs return one page plus a `hasNext` cursor. Requesting a single
-# page silently truncates: BOI alone has 104 leaf devices against a 100-row page.
-# API-TB.md: "Always paginate large datasets".
+# ThingsBoard page APIs return one page plus a `hasNext` cursor; requesting a single
+# page silently truncates. API-TB.md: "Always paginate large datasets".
+#
+# Measured against live TB (2026-07-27): the largest customer, BOI-MALDATOWN, holds
+# exactly 100 devices — sitting ON the default page boundary, not past it. So this is
+# preventive, not corrective: nothing is being dropped today, but device 101 would
+# have vanished with no error. (BOI's 104 hierarchy leaves span five TB customers;
+# they are not one customer's device list.)
 _MAX_PAGES = 50  # ponytail: 5k devices at the default page size; raise if a fleet outgrows it
 
 
