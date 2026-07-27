@@ -31,10 +31,15 @@ from app.tasks.scheduler import run_periodic
 def configure_logging() -> None:
     """Give the app's own loggers a handler.
 
-    Uvicorn configures only its own loggers and leaves root at WARNING, so every
-    app-level logger.info ([LIVE-SYNC], [REPLAY], [SCHEDULER]) was dropped before
-    reaching container stdout — a healthy sync looked identical to one that never
-    ran. force=True because uvicorn may already have touched the root handlers.
+    Uvicorn's logging config touches only the `uvicorn*` loggers and sets
+    disable_existing_loggers=False, so it never gives root a handler and root
+    stays at WARNING. Every app-level logger.info ([LIVE-SYNC], [REPLAY],
+    [SCHEDULER]) was therefore dropped before reaching container stdout — a
+    healthy sync looked identical to one that had never started.
+
+    This runs at import (module-level `app = create_app()`), i.e. before uvicorn
+    configures anything; verified that uvicorn's later dictConfig leaves root's
+    level and handler alone. force=True only guards against a second call.
     """
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
