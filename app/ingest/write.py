@@ -17,7 +17,11 @@ async def write_event(session: AsyncSession, event: EventParse) -> bool:
             time=event.time,
             payload=event.payload,
         )
-        .on_conflict_do_nothing(constraint="uq_event_tenant_event")
+        # Renamed in migration 0002: TimescaleDB requires the partition column in
+        # every unique index, so `time` joined the key. Naming the old constraint
+        # here would raise on every insert and stop ingestion silently, because the
+        # consumer logs and moves on.
+        .on_conflict_do_nothing(constraint="uq_event_tenant_event_time")
     )
     result = await session.execute(stmt)
     await session.commit()

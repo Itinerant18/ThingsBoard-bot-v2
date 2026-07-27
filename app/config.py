@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     customers_title_mappings: str = ""
     max_context_tokens: int = 10000
     deterministic_answers_enabled: bool = True
+    # "changed" writes a telemetry row only when a key's value differs from the last
+    # observation — every key is still stored, just not duplicated 1440x/day per key.
+    # "all" stores every observation (~212M rows/day at 60s across 128 devices).
+    telemetry_write_mode: str = "changed"
     tb_scheduled_sync_enabled: bool = True
     tb_scheduled_sync_interval_ms: int = 60000
     reconciliation_enabled: bool = True

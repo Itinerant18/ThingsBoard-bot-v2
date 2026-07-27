@@ -97,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             app.state.session_factory,
                             app.state.redis,
                             app.state.tb,
+                            test_settings.telemetry_write_mode,
                         ),
                         initial_delay_seconds=5,
                     )

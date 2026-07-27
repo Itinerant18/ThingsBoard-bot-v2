@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import HierarchyNode
+from app.ingest.telemetry import changed_fields, write_telemetry
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -123,19 +124,49 @@ async def fetch_device_fields(tb: _TbClient, device_id: str) -> dict[str, Any]:
     return fields
 
 
+async def _read_device_state(redis: "Redis", customer: str, device_id: str) -> dict[str, Any]:
+    """Current Redis hash for a device — the baseline for change detection.
+
+    Reusing the cache as the baseline means no extra state to keep: whatever the last
+    cycle stored IS the last observation. A cache miss returns {}, which makes every
+    key look new and writes a full snapshot — correct, if occasionally verbose.
+    """
+    try:
+        raw = await redis.hgetall(_state_key(customer, device_id))
+    except Exception:
+        logger.warning("[LIVE-SYNC] baseline read failed for %s", device_id, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {_text(k): _text(v) for k, v in raw.items()}
+
+
 async def sync_customer(
-    redis: "Redis", tb: _TbClient, customer: str, devices: Sequence[DeviceRef]
+    redis: "Redis",
+    tb: _TbClient,
+    customer: str,
+    devices: Sequence[DeviceRef],
+    session_factory: "async_sessionmaker[AsyncSession] | None" = None,
+    write_mode: str = "changed",
 ) -> int:
-    """Fetch and store raw state for one customer's devices. Returns devices synced.
+    """Fetch each device, cache it in Redis and append its history to Tiger.
 
     A per-customer Redis lock (Java: replay lock) prevents two processes rebuilding
     the same customer at once; a running cycle is skipped, not queued. A device whose
     fetch fails keeps its previous snapshot (TTL not refreshed) rather than being wiped.
+
+    History is written BEFORE the cache is replaced, because the cached hash is the
+    change-detection baseline — overwriting it first would make every key look
+    unchanged and silently persist nothing.
+
+    A database failure must not cost the cache update: the snapshot is what answers
+    live questions, so persistence errors are logged and the cycle continues.
     """
     if not await try_rebuild_lock(redis, customer):
         logger.info("[LIVE-SYNC] rebuild already in progress for %s - skipping cycle", customer)
         return 0
     synced = 0
+    persisted = 0
     try:
         for device in devices:
             try:
@@ -153,16 +184,49 @@ async def sync_customer(
             fields["device_id"] = device.device_id
             fields["branch_name"] = device.display_name
             fields["node_id"] = device.node_id
+
+            if session_factory is not None:
+                try:
+                    baseline = (
+                        None
+                        if write_mode == "all"
+                        else await _read_device_state(redis, customer, device.device_id)
+                    )
+                    to_write = changed_fields(fields, baseline)
+                    if to_write:
+                        async with session_factory() as session:
+                            persisted += await write_telemetry(
+                                session,
+                                device.device_id,
+                                to_write,
+                                customer_id=customer,
+                            )
+                except Exception:
+                    logger.warning(
+                        "[LIVE-SYNC] telemetry persist failed for %s",
+                        device.device_id,
+                        exc_info=True,
+                    )
+
             await store_device_state(redis, customer, device.device_id, fields)
             synced += 1
-        logger.info("[LIVE-SYNC] synced %d/%d devices for %s", synced, len(devices), customer)
+        logger.info(
+            "[LIVE-SYNC] synced %d/%d devices for %s (%d telemetry rows)",
+            synced,
+            len(devices),
+            customer,
+            persisted,
+        )
         return synced
     finally:
         await release_rebuild_lock(redis, customer)
 
 
 async def sync_all_customers(
-    session_factory: async_sessionmaker[AsyncSession], redis: "Redis", tb: _TbClient
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: "Redis",
+    tb: _TbClient,
+    write_mode: str = "changed",
 ) -> None:
     """DB glue: enumerate customers + leaf devices, then sync each customer."""
     async with session_factory() as session:
@@ -182,7 +246,9 @@ async def sync_all_customers(
         )
     for customer, devices in by_customer.items():
         try:
-            await sync_customer(redis, tb, customer, devices)
+            await sync_customer(
+                redis, tb, customer, devices, session_factory=session_factory, write_mode=write_mode
+            )
         except Exception:
             logger.exception("[LIVE-SYNC] sync failed for customer %s", customer)
 

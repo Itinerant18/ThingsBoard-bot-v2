@@ -22,14 +22,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import HierarchyNode
-from app.ingest.parse import EventParse
+from app.ingest.parse import EventParse, flatten_device_fields
 from app.ingest.publisher import (
     CATCH_ALL_QUEUE,
     QUEUE_ARGS,
     declare_topology,
     routing_key_for,
 )
+from app.ingest.telemetry import write_telemetry
 from app.ingest.write import write_event
+from app.normalization.flatten import expand_containers
 from app.tasks.live_sync import merge_device_state
 from app.tasks.replay import fold_payload
 
@@ -109,6 +111,29 @@ async def process_event(
         return "duplicate"
     async with sessions() as session:
         await write_event(session, event)
+
+        # The raw payload stays in device_event for audit, but it is nested JSON
+        # (data.currentAttr.rock....) and unqueryable without parsing every row.
+        # Writing the flattened fields to device_telemetry is what makes webhook data
+        # answerable — and it is the only history for devices whose keys never appear
+        # in a live-sync cycle.
+        fields = expand_containers(flatten_device_fields(dict(event.payload)))
+        if fields:
+            try:
+                await write_telemetry(
+                    session,
+                    event.device_id,
+                    fields,
+                    tenant_id=event.tenant_id,
+                    customer_id=event.customer_id,
+                    observed_at=event.time,
+                )
+            except Exception:
+                # Losing history must not cost the event row or the cache fold.
+                logger.warning(
+                    "[CONSUMER] telemetry persist failed for %s", event.device_id, exc_info=True
+                )
+
         folded = False
         if event.customer_id and await _device_in_customer_hierarchy(
             session, event.customer_id, event.device_id
