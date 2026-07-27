@@ -22,8 +22,11 @@ async def thingsboard_webhook(request: Request) -> dict[str, bool]:
     # Parse eagerly even on the queue path: reject garbage at the edge with a 4xx
     # instead of poisoning the queue and dead-lettering it in the consumer.
     try:
-        event = EventParse.from_payload(json.loads(body))
+        event = EventParse.from_payload(
+            json.loads(body), request.app.state.settings.webhook_default_tenant_id
+        )
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        logger.warning("rejected webhook payload: %s", exc)
         raise HTTPException(status_code=422, detail="Malformed event payload") from exc
 
     publisher = getattr(request.app.state, "publisher", None)

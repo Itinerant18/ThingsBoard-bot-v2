@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Java ran a 2AM IST cron; v2 uses a fixed interval from boot (daily by default).
     reconciliation_interval_seconds: int = 24 * 60 * 60
     webhook_hmac_secret: str = ""
+    # ThingsBoard rule chains do not send a tenant id; ingested events fall back to this
+    # so the (tenant_id, event_id) dedup key and tenant-scoped alarm queries line up with
+    # the tenantId claim in caller JWTs.
+    webhook_default_tenant_id: str = ""
     # Diagram architecture: webhook publishes to RabbitMQ; consumer owns persistence.
     webhook_publish_to_queue: bool = True
     # Broker down -> write straight to Postgres instead of 503 (loses the per-event

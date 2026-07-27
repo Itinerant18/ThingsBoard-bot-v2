@@ -1,0 +1,39 @@
+# Production compose for the EC2 host.
+#
+# Unlike docker-compose.yml (local dev), this starts NO Postgres/Redis/RabbitMQ: production
+# uses Tiger Cloud, Upstash and CloudAMQP, all configured through .env.
+#
+# It joins the EXISTING `thingsboard-bot_default` network as an external network so the
+# already-running caddy-proxy can reach this app. Caddy is configured with
+# `reverse_proxy chatbot:8083`, so the app service MUST stay named `chatbot` for that to
+# resolve — the container_name differs only so the old Java container can be kept around
+# for rollback.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   rollback:  docker compose -f docker-compose.prod.yml down && docker start chatbot-demo
+
+services:
+  chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: thingsboard-bot-v2:latest
+    container_name: chatbot-v2
+    env_file: [.env]
+    environment:
+      APP_ROLE: all
+    expose: ["8083"]
+    restart: always
+
+  consumer:
+    image: thingsboard-bot-v2:latest
+    container_name: chatbot-v2-consumer
+    command: python -m app.ingest.consumer
+    env_file: [.env]
+    restart: always
+    depends_on: [chatbot]
+
+networks:
+  default:
+    name: thingsboard-bot_default
+    external: true

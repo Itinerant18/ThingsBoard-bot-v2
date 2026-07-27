@@ -126,6 +126,7 @@ async def consume_events(
     sessions: async_sessionmaker[AsyncSession],
     redis: "Redis",
     customer: str | None = None,
+    default_tenant: str = "",
 ) -> None:
     """Consume from the topic exchange. Default worker takes the catch-all queue
     (every customer); pass a customer prefix to run a dedicated worker that binds
@@ -151,7 +152,7 @@ async def consume_events(
     async with queue.iterator() as messages:
         async for message in messages:
             async with message.process(requeue=False):
-                event = EventParse.from_payload(json.loads(message.body))
+                event = EventParse.from_payload(json.loads(message.body), default_tenant)
                 await process_event(sessions, redis, event)
 
 
@@ -174,7 +175,9 @@ def main() -> None:
     async def _run() -> None:
         redis = await create_redis(settings.redis_url)
         try:
-            await consume_events(settings.rabbitmq_url, sessions, redis, customer=args.customer)
+            await consume_events(settings.rabbitmq_url, sessions, redis,
+                                 customer=args.customer,
+                                 default_tenant=settings.webhook_default_tenant_id)
         finally:
             await redis.aclose()
 

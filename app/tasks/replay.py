@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import DeviceEvent, HierarchyNode
+from app.ingest.parse import flatten_device_fields
 from app.tasks.live_sync import release_rebuild_lock, store_device_state, try_rebuild_lock
 
 if TYPE_CHECKING:
@@ -26,10 +27,15 @@ logger = logging.getLogger(__name__)
 
 # Webhook envelope fields — transport metadata, not device state.
 _ENVELOPE_KEYS = frozenset(
-    {"tenant_id", "device_id", "event_id", "customer_id", "ts", "event_type", "id"}
+    {
+        "tenant_id", "device_id", "event_id", "customer_id", "ts", "event_type", "id",
+        # ThingsBoard-native envelope spellings
+        "deviceId", "deviceName", "customerId", "tenantId", "tbMessageId", "msgId",
+        "originatorId", "entityId", "logType", "timestamp", "eventTime",
+    }
 )
 # Containers whose CONTENTS are device fields ({"data": {"cpu": 40}} -> cpu=40).
-_VALUE_CONTAINERS = ("values", "data", "telemetry", "attributes")
+_VALUE_CONTAINERS = ("values", "data", "telemetry", "attributes", "currentAttr")
 
 
 class ReplayInProgressError(Exception):
@@ -37,12 +43,12 @@ class ReplayInProgressError(Exception):
 
 
 def fold_payload(state: dict[str, Any], payload: Mapping[str, Any]) -> None:
-    """Merge one event's payload into a device's accumulated state (newer wins)."""
-    for container in _VALUE_CONTAINERS:
-        inner = payload.get(container)
-        if isinstance(inner, Mapping):
-            for key, value in inner.items():
-                state[str(key)] = value
+    """Merge one event's payload into a device's accumulated state (newer wins).
+
+    Nested containers are unwrapped by flatten_device_fields, which also handles the
+    two-level shape ThingsBoard sends ({"data": {"currentAttr": {...}}}).
+    """
+    state.update(flatten_device_fields(dict(payload)))
     for key, value in payload.items():
         if key in _ENVELOPE_KEYS or key in _VALUE_CONTAINERS:
             continue
