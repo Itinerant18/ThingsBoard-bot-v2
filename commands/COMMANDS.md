@@ -197,3 +197,57 @@ curl "http://localhost:8000/device/<device-uuid>/chart?key=battery_status&hours=
 | `REQUIRE_ADMIN_TOKEN` / `ADMIN_TOKEN` | off / empty | gate admin endpoints |
 | `REQUIRE_WEBHOOK_HMAC` / `WEBHOOK_HMAC_SECRET` | off / empty | webhook HMAC verification |
 | `OPENAI_API_KEY` | empty | enables LLM intent extraction (falls back to keywords) |
+
+## Production deploy (EC2)
+
+The host runs `chatbot-v2` + `chatbot-v2-consumer` behind the existing `caddy-proxy`.
+`~/ThingsBoard-Bot-v2/` is a git checkout of this repo, so deploying is pull + rebuild —
+do NOT scp files in, or the host silently diverges from what the repo says is running.
+
+`.env` lives only on the host (gitignored, never committed). `git reset --hard` leaves
+it alone because it is untracked.
+
+```bash
+ssh -i <key>.pem ubuntu@<host>
+
+cd ~/ThingsBoard-Bot-v2
+docker tag thingsboard-bot-v2:latest thingsboard-bot-v2:rollback   # keep a way back
+git pull --ff-only origin main
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Verify the deploy — an app INFO line proves logging works, and the per-customer
+sync summary proves the scheduler ran:
+
+```bash
+docker ps --format '{{.Names}} | {{.Status}}'
+docker logs chatbot-v2 2>&1 | grep 'LIVE-SYNC'      # expect "synced N/N" per customer
+docker logs chatbot-v2 2>&1 | grep -ci traceback    # expect 0
+docker exec chatbot-v2 python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8083/health').status)"
+```
+
+Rollback:
+
+```bash
+docker compose -f docker-compose.prod.yml down
+docker tag thingsboard-bot-v2:rollback thingsboard-bot-v2:latest
+docker compose -f docker-compose.prod.yml up -d      # no --build: reuse the old image
+```
+
+Confirm what is actually deployed (guards against host/repo drift):
+
+```bash
+cd ~/ThingsBoard-Bot-v2 && git log --oneline -1 && git status --short   # expect clean
+```
+
+### Log levels
+
+App loggers get a handler from `configure_logging()` in `app/main.py`; uvicorn only
+configures its own, leaving root at WARNING, so without it every `[LIVE-SYNC]`,
+`[REPLAY]` and `[SCHEDULER]` line is discarded before reaching container stdout.
+`httpx` is pinned to WARNING — at INFO it logs one line per request, which is ~740k
+lines/day from live sync alone.
+
+```bash
+LOG_LEVEL=DEBUG    # override in .env when debugging; default INFO
+```
