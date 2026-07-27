@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -7,6 +8,8 @@ import httpx
 
 from app.auth.security import assert_allowed_tb_url
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 # ThingsBoard page APIs return one page plus a `hasNext` cursor. Requesting a single
 # page silently truncates: BOI alone has 104 leaf devices against a 100-row page.
@@ -40,6 +43,11 @@ async def fetch_all_pages(
         rows.extend(body.get("data") or [])
         if not body.get("hasNext"):
             break
+    else:
+        # Exhausting the cap means the result IS truncated — say so rather than
+        # handing back a short list wearing hasNext=False, which is the exact
+        # silent-drop this function exists to remove.
+        logger.warning("[TB] %s hit the %d-page cap; result is truncated", path, _MAX_PAGES)
     return {**body, "data": rows, "hasNext": False} if isinstance(body, dict) else {"data": rows}
 
 

@@ -4,14 +4,18 @@ BOI has 104 leaf devices against ThingsBoard's 100-row page, so a single-page fe
 drops real devices from /api/v1/data. API-TB.md: "Always paginate large datasets".
 """
 
+import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
 
 from app.clients.thingsboard import fetch_all_pages
 
+_Get = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
-def _pager(total: int, page_size: int) -> tuple[list[dict[str, Any]], list[int]]:
+
+def _pager(total: int, page_size: int) -> tuple[_Get, list[int]]:
     """Fake TB page endpoint; also records which page numbers were requested."""
     seen: list[int] = []
 
@@ -22,7 +26,7 @@ def _pager(total: int, page_size: int) -> tuple[list[dict[str, Any]], list[int]]
         rows = [{"n": i} for i in range(start, min(start + page_size, total))]
         return {"data": rows, "hasNext": start + page_size < total, "totalElements": total}
 
-    return get, seen  # type: ignore[return-value]
+    return get, seen
 
 
 @pytest.mark.asyncio
@@ -44,7 +48,9 @@ async def test_single_page_makes_one_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stops_at_max_pages_when_has_next_never_clears() -> None:
+async def test_stops_at_max_pages_when_has_next_never_clears(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     calls = 0
 
     async def get(path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -52,9 +58,12 @@ async def test_stops_at_max_pages_when_has_next_never_clears() -> None:
         calls += 1
         return {"data": [{"n": calls}], "hasNext": True}
 
-    body = await fetch_all_pages(get, "/api/customer/x/devices", 100)
+    with caplog.at_level(logging.WARNING):
+        body = await fetch_all_pages(get, "/api/customer/x/devices", 100)
     assert calls == 50  # bounded, not an infinite loop against a misbehaving TB
     assert len(body["data"]) == 50
+    # Truncation must be announced, not hidden behind hasNext=False.
+    assert "truncated" in caplog.text
 
 
 @pytest.mark.asyncio
