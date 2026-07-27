@@ -103,24 +103,53 @@ def resolve_subsystem_state(
     return _resolve_first_state(raw, [primary_field, *fallbacks])
 
 
-def resolve_battery_voltage(raw: Mapping[str, Any]) -> ResolvedMetric:
-    battery = to_double(raw.get("battery_status_battery_voltage"))
-    if battery is not None:
-        return ResolvedMetric(battery, "battery_status_battery_voltage")
-    gateway = to_double(raw.get("gatewayStatus_battery_voltage"))
-    if gateway is not None:
-        return ResolvedMetric(gateway, "gatewayStatus_battery_voltage")
+# Ladders for the three numeric power metrics.
+#
+# The flat name comes FIRST because docs/Telimetry-Attribute-key.md treats it as
+# canonical and it is what devices actually carry (battery_voltage on 92 of 128).
+# The dotted alias is the nested container field, materialised by
+# normalization.flatten.expand_containers. The underscore spellings that used to be
+# first here exist on NO device in the fleet — they are kept last only so a device
+# that ever emits them still resolves.
+_BATTERY_VOLTAGE_KEYS = (
+    "battery_voltage",
+    "battery_status.battery_voltage",
+    "gatewayStatus.battery_voltage",
+    "battery_status_battery_voltage",
+    "gatewayStatus_battery_voltage",
+)
+_AC_VOLTAGE_KEYS = (
+    "ac_voltage",
+    "ac_status.ac_voltage",
+    "gatewayStatus.ac_voltage",
+    "ac_status_ac_voltage",
+)
+_SYSTEM_CURRENT_KEYS = (
+    "system_current",
+    "current_status.system_current",
+    "gatewayStatus.system_current",
+    "current_status_system_current",
+)
+
+
+def _first_number(raw: Mapping[str, Any], keys: tuple[str, ...]) -> ResolvedMetric:
+    for key in keys:
+        value = to_double(raw.get(key))
+        if value is not None:
+            return ResolvedMetric(value, key)
     return ResolvedMetric(None, None)
 
 
+def resolve_battery_voltage(raw: Mapping[str, Any]) -> ResolvedMetric:
+    return _first_number(raw, _BATTERY_VOLTAGE_KEYS)
+
+
 def resolve_ac_voltage(raw: Mapping[str, Any]) -> ResolvedMetric:
-    value = to_double(raw.get("ac_status_ac_voltage"))
-    return ResolvedMetric(value, "ac_status_ac_voltage" if value is not None else None)
+    return _first_number(raw, _AC_VOLTAGE_KEYS)
 
 
 def resolve_system_current(raw: Mapping[str, Any]) -> ResolvedMetric:
-    value = to_double(raw.get("current_status_system_current"))
-    return ResolvedMetric(value, "current_status_system_current" if value is not None else None)
+    return _first_number(raw, _SYSTEM_CURRENT_KEYS)
 
 
 def resolve_mains_on(raw: Mapping[str, Any]) -> bool | None:

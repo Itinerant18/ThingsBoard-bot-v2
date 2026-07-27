@@ -112,7 +112,14 @@ async def fetch_device_fields(tb: _TbClient, device_id: str) -> dict[str, Any]:
     if isinstance(series, dict):
         for key, points in series.items():
             if isinstance(points, list) and points and isinstance(points[0], dict):
-                fields[str(key)] = points[0].get("value")
+                value = points[0].get("value")
+                # Never let a null reading erase a populated attribute. This path is
+                # safe today only by luck — it requests no explicit `keys`, so
+                # ThingsBoard omits empty ones — but adding a keys list here would
+                # silently blank every nested subsystem container.
+                if value is None and fields.get(str(key)) is not None:
+                    continue
+                fields[str(key)] = value
     return fields
 
 

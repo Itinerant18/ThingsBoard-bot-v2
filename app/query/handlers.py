@@ -11,6 +11,7 @@ from app.config import Settings
 from app.db.models import DeviceEvent
 from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
+from app.normalization.flatten import expand_containers, request_keys
 from app.normalization.snapshot import BranchSnapshot
 from app.query import cctv
 from app.query.answer_support import (
@@ -205,12 +206,23 @@ async def _load_raw(client: _TbClient, device_id: str, keys: list[str]) -> dict[
             for item in attrs:
                 if isinstance(item, dict) and "key" in item:
                     raw[str(item["key"])] = item.get("value")
-    series = await client.telemetry(device_id, keys=",".join(keys) if keys else None)
+    # Dotted paths are our addressing scheme, not ThingsBoard keys — ask for the
+    # container ("gateway"), not "gateway.powerStatus", which matches nothing.
+    wanted = request_keys(keys)
+    series = await client.telemetry(device_id, keys=",".join(wanted) if wanted else None)
     if isinstance(series, dict):
         for key, points in series.items():
             if isinstance(points, list) and points and isinstance(points[0], dict):
-                raw[str(key)] = points[0].get("value")
-    return raw
+                value = points[0].get("value")
+                # A null telemetry reading must NOT erase a good attribute value.
+                # Requesting keys explicitly makes ThingsBoard answer for keys that
+                # have no timeseries at all — it returns {"gateway": [{"value": null}]}
+                # — which used to overwrite the populated `gateway` attribute object
+                # with None, so every subsystem read came back empty.
+                if value is None and raw.get(str(key)) is not None:
+                    continue
+                raw[str(key)] = value
+    return expand_containers(raw)
 
 
 class MetricHandler:
