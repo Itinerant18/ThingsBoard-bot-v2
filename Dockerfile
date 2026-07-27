@@ -17,6 +17,9 @@ RUN useradd --create-home --uid 10001 appuser
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev || uv sync --no-dev
 COPY app ./app
+# Operational scripts (backfill, extraction, seeding) run inside the container via
+# `docker exec ... python -m scripts.<name>`, so they have to ship with the image.
+COPY scripts ./scripts
 # Only the build output; app/main.py mounts /ui from frontend/dist.
 COPY --from=frontend /frontend/dist ./frontend/dist
 COPY alembic.ini ./
