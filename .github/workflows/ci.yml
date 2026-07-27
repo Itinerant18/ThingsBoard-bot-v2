@@ -17,6 +17,21 @@ jobs:
   gate:
     name: lint + types + tests
     runs-on: ubuntu-latest
+
+    services:
+      # tests/test_device_access.py talks to a plain redis://localhost:6379/0 rather
+      # than spinning up a container itself, so without this the eight scope-enforcement
+      # tests error out — exactly the tests that prove cross-tenant access is refused.
+      # (The Postgres suites use testcontainers and need nothing here.)
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
