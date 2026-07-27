@@ -46,6 +46,11 @@ def configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         force=True,
     )
+    # httpx logs one INFO line per request. Live sync makes 4 calls per device per
+    # cycle, so at INFO it emitted 513 of every 536 lines and buried the summaries
+    # this function exists to surface. Failures still reach us: httpx errors raise
+    # and are logged by the caller.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
