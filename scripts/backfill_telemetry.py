@@ -32,8 +32,11 @@ CONCURRENCY = 2  # above this ThingsBoard returns 429 for this pattern
 MAX_ATTEMPTS = 5
 
 
-KEY_BATCH = 40  # keeps the querystring well inside ThingsBoard's URL limits
-POINT_LIMIT = 10000  # 50000 is rejected with 400
+# ThingsBoard rejects a query whose keys x limit implies too many points: 40 keys at
+# limit=10000 returns 400, as does limit=50000 on its own. Small batches also mean a
+# rejected batch costs one slice of one device rather than the whole device.
+KEY_BATCH = 10
+POINT_LIMIT = 2000
 
 
 async def _get_with_retry(tb: ThingsBoardClient, path: str, params: dict[str, Any]) -> Any:
@@ -71,16 +74,23 @@ async def _history(tb: ThingsBoardClient, device_id: str, start_ms: int, end_ms:
     merged: dict[str, Any] = {}
     for start in range(0, len(keys), KEY_BATCH):
         batch = [str(k) for k in keys[start : start + KEY_BATCH]]
-        got = await _get_with_retry(
-            tb,
-            f"{base}/values/timeseries",
-            {
-                "keys": ",".join(batch),
-                "startTs": start_ms,
-                "endTs": end_ms,
-                "limit": POINT_LIMIT,
-            },
-        )
+        try:
+            got = await _get_with_retry(
+                tb,
+                f"{base}/values/timeseries",
+                {
+                    "keys": ",".join(batch),
+                    "startTs": start_ms,
+                    "endTs": end_ms,
+                    "limit": POINT_LIMIT,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            # One awkward key must not cost the whole device's history.
+            logger.warning(
+                "batch rejected (%s) for %s: %s", exc.response.status_code, device_id, batch[:3]
+            )
+            continue
         if isinstance(got, dict):
             merged.update(got)
     return merged
