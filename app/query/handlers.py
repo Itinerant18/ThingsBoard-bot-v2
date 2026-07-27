@@ -1,3 +1,4 @@
+import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
@@ -22,6 +23,8 @@ from app.query.answer_support import (
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.key_profiles import keys_for
 from app.tasks.live_sync import load_fleet_states
+
+logger = logging.getLogger(__name__)
 
 # Callable that resolves the caller's authorized branch set. Injectable so handlers
 # are unit-testable without a live DB/Redis.
@@ -257,6 +260,21 @@ class MetricHandler:
         client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
         try:
             raw = await _load_raw(client, device_id, keys)
+        except Exception as exc:
+            # A ThingsBoard failure (expired/invalid caller token, TB down) must read as
+            # an answer, not a 500 through the chat pipeline.
+            logger.warning("device fetch failed for %s", device_id, exc_info=True)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (401, 403):
+                return Answer(
+                    "ThingsBoard rejected your token for that device — it may have expired. "
+                    "Sign in again and retry.",
+                    {"error": "thingsboard_auth", "device_id": device_id},
+                )
+            return Answer(
+                "I could not reach ThingsBoard for that device just now. Please retry.",
+                {"error": "thingsboard_unavailable", "device_id": device_id},
+            )
         finally:
             await client.close()
         raw.setdefault("device_id", device_id)

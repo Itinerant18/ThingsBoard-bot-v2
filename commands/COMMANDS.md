@@ -47,7 +47,71 @@ uv run python -m app.ingest.consumer
 uv run python -m app.ingest.consumer --customer BOI
 ```
 
+### Broker topology (v2 is namespaced separately from Java)
+
+| Object | Name | Purpose |
+|---|---|---|
+| Topic exchange | `v2.events.topic` | webhook publishes here, key `customer.<PREFIX>` |
+| Catch-all queue | `v2.events` | bound `customer.#` — every customer |
+| Per-customer queue | `v2.events.<PREFIX>` | bound `customer.<PREFIX>` |
+| Dead-letter exchange | `v2.dlx` | rejected messages |
+| Dead-letter queue | `v2.events.dead` | bound to `v2.dlx` |
+
+The Java stack's `iot.events` / `iot.dlx` are deliberately NOT reused: Java publishes a
+different payload shape (`deviceId`, `tbMessageId`, no `tenant_id`) that `EventParse`
+rejects, so sharing a queue would dead-letter everything and make both consumers compete.
+Separate names let both stacks run in parallel during cutover.
+
+**Run the catch-all worker OR per-customer workers, not both** — a topic exchange delivers
+to every matching queue, so `customer.#` and `customer.BOI` both receive BOI messages
+(idempotency makes that safe, but it is wasted work). Do not leave a per-customer queue
+declared with no worker attached; it will accumulate messages forever.
+
 PowerShell equivalent for env vars: `$env:APP_ROLE = "chat"; uv run uvicorn app.main:app`
+
+## Chat tester UI (frontend/)
+
+Served by the app itself at `/ui`, so it is same-origin with the API (no CORS setup
+needed). Mounted only for `APP_ROLE=all|chat`, and only when `SERVE_UI=true`.
+
+```bash
+# Start a dev server for manual testing (background jobs off so it boots fast)
+TIMESCALE_INIT_ENABLED=false TB_SCHEDULED_SYNC_ENABLED=false \
+RECONCILIATION_ENABLED=false WEBHOOK_PUBLISH_TO_QUEUE=false \
+  uv run uvicorn app.main:app --port 8077
+
+# then open  http://127.0.0.1:8077/ui/
+```
+
+Set the ThingsBoard JWT from the browser console (or the "set token" button):
+
+```js
+localStorage.setItem('tb_jwt', 'PASTE_YOUR_TB_JWT')   // then reload
+setToken('PASTE_YOUR_TB_JWT')                          // helper, no reload needed
+clearToken()
+```
+
+The header shows the decoded `sub` / `firstName` / `customerTitle` claims so you can
+see which scope you are testing as. The `conv` box controls `conversation_id` — keep it
+to test follow-up memory ("battery voltage of Liluah" → "and its cctv status?"), press
+**new** to start a fresh context. Every reply has a collapsible raw-response view.
+
+## One-time setup for a fresh database
+
+Point `DATABASE_URL` at the instance first. Tiger/Timescale Cloud hands out a
+`postgres://…?sslmode=require` URL; asyncpg needs it rewritten as
+`postgresql+asyncpg://…?ssl=require`.
+
+```bash
+uv run alembic upgrade head                       # 1. create the v2 schema
+uv run python scripts/extract_tb_data.py --out data/tb_extract_full.json   # 2. pull TB
+curl -X POST http://127.0.0.1:8077/api/v1/admin/import \
+  -H "Content-Type: application/json" --data @data/tb_extract_full.json    # 3. hierarchy
+PYTHONPATH=. uv run python scripts/seed_customers.py                       # 4. prefixes
+```
+
+Step 4 is required: `current_tenant` maps a JWT's `customerId` to a customer prefix via
+the `customer` table. Skip it and every answer is "your token is not mapped to a customer".
 
 ## Quality gate (run before every commit)
 

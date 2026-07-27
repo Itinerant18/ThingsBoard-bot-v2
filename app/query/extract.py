@@ -32,7 +32,13 @@ class KeywordIntentExtractor:
             return any(w in text for w in words)
 
         cctv = "cctv" in text or "camera" in text
-        if has("inventory", "how many device", "list device"):
+        # "how many …" wants a count (global_overview); "list/show/which …" wants the
+        # names (device_inventory). Count is checked first so "how many branches do you
+        # list" is still a count.
+        if has("how many", "count of", "total number") and not cctv:
+            intent = "global_overview"
+        elif has("inventory", "list device", "list branch", "list my", "show me the branch",
+                 "which branch", "what branch", "name the branch", "all branches"):
             intent = "device_inventory"
         elif has("alarm", "alert"):
             intent = "alarm_detail"

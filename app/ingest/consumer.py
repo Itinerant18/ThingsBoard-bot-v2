@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import HierarchyNode
 from app.ingest.parse import EventParse
-from app.ingest.publisher import CATCH_ALL_QUEUE, declare_topology, routing_key_for
+from app.ingest.publisher import (
+    CATCH_ALL_QUEUE,
+    QUEUE_ARGS,
+    declare_topology,
+    routing_key_for,
+)
 from app.ingest.write import write_event
 from app.tasks.live_sync import merge_device_state
 from app.tasks.replay import fold_payload
@@ -137,15 +142,11 @@ async def consume_events(
     exchange = await declare_topology(channel)
     if customer:
         queue = await channel.declare_queue(
-            f"{CATCH_ALL_QUEUE}.{customer}",
-            durable=True,
-            arguments={"x-dead-letter-exchange": "iot.dlx"},
+            f"{CATCH_ALL_QUEUE}.{customer}", durable=True, arguments=QUEUE_ARGS
         )
         await queue.bind(exchange, routing_key=routing_key_for(customer))
     else:
-        queue = await channel.declare_queue(
-            CATCH_ALL_QUEUE, durable=True, arguments={"x-dead-letter-exchange": "iot.dlx"}
-        )
+        queue = await channel.declare_queue(CATCH_ALL_QUEUE, durable=True, arguments=QUEUE_ARGS)
     logger.info("consuming %s", queue.name)
     async with queue.iterator() as messages:
         async for message in messages:

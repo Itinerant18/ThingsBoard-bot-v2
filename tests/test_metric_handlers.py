@@ -142,13 +142,31 @@ async def test_cctv_intent_fetches_vendor_keys() -> None:
     assert "rock_HddINFO" in requested
 
 
-async def test_client_closed_even_on_tb_error() -> None:
+async def test_tb_error_answers_gracefully_and_closes_client() -> None:
+    # A ThingsBoard failure must never escape as a 500 through the chat pipeline.
     device = str(uuid.uuid4())
     client = FakeClient(exc=RuntimeError("tb down"))
     handler = make_handler(ScopedBranches(["b"], [device]), client)
-    with pytest.raises(RuntimeError):
-        await handler.handle(gateway_intent(device), make_ctx())
-    assert client.closed is True  # finally: close() ran
+    answer = await handler.handle(gateway_intent(device), make_ctx())
+    assert "could not reach ThingsBoard" in answer.text
+    assert answer.structured["error"] == "thingsboard_unavailable"
+    assert client.closed is True  # finally: close() still ran
+
+
+async def test_tb_auth_error_tells_user_token_expired() -> None:
+    device = str(uuid.uuid4())
+
+    class _Resp:
+        status_code = 401
+
+    exc = RuntimeError("401")
+    exc.response = _Resp()  # type: ignore[attr-defined]
+    client = FakeClient(exc=exc)
+    handler = make_handler(ScopedBranches(["b"], [device]), client)
+    answer = await handler.handle(gateway_intent(device), make_ctx())
+    assert "may have expired" in answer.text
+    assert answer.structured["error"] == "thingsboard_auth"
+    assert client.closed is True
 
 
 # --- fleet handlers are scope-only (no service-client leak) ------------------

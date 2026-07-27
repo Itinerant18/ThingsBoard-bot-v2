@@ -14,6 +14,7 @@ from testcontainers.postgres import PostgresContainer
 
 from app.db.models import Base, BranchAncestorPath, HierarchyNode
 from app.hierarchy.parser import ParsedNode, parse_device_path
+from app.hierarchy.scope import RegionalScope, branch_scope
 from app.hierarchy.store import rebuild_ancestor_paths, upsert_nodes
 
 
@@ -87,3 +88,63 @@ async def test_reimport_is_idempotent(session: AsyncSession) -> None:
     path_count = (await session.execute(select(func.count()).select_from(BranchAncestorPath))).scalar()
     assert node_count == 6  # 1 HO + 1 ZO + 1 RO + 3 branches
     assert path_count == 3 * 4 + 1 + 2 + 3  # branches(4 each) + HO(1) + ZO(2) + RO(3)
+
+
+class _NoRedis:
+    """branch_scope's cache is optional; these tests exercise the DB path only."""
+
+    async def get(self, key: str) -> None:
+        return None
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        return None
+
+
+async def test_branch_scope_reads_closure_table(session: AsyncSession) -> None:
+    """Regression: branch_scope must actually load the closure rows.
+
+    Every other test overrides the scoped_branches dependency, so this real code path
+    was unexercised and a select(Entity).all() bug (row.node_id -> KeyError) shipped.
+    """
+    await upsert_nodes(session, shared_path_nodes())
+    await rebuild_ancestor_paths(session, "BOI")
+    await session.commit()
+
+    everything = await branch_scope(
+        session, "BOI", RegionalScope(name=None, explicit=False), _NoRedis()
+    )
+    assert len(everything.branch_node_ids) == 3
+    assert len(everything.tb_device_ids) == 3
+
+    # Region filtering runs over the closure rows this function loads.
+    in_zone = await branch_scope(
+        session, "BOI", RegionalScope(name="ZO Kolkata", explicit=True), _NoRedis()
+    )
+    assert sorted(in_zone.branch_node_ids) == ["BOI-MALDATOWN", "BOI-PARKST", "BOI-SALTLAKE"]
+
+    # Explicit region that does not exist must fail closed, not fall back to everything.
+    missing = await branch_scope(
+        session, "BOI", RegionalScope(name="ZO Nowhere", explicit=True), _NoRedis()
+    )
+    assert missing.branch_node_ids == []
+
+
+class _BrokenRedis:
+    async def get(self, key: str) -> None:
+        raise ConnectionError("cache down")
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        raise ConnectionError("cache down")
+
+
+async def test_branch_scope_survives_cache_outage(session: AsyncSession) -> None:
+    """A Redis outage must not break the scope gate (and therefore all of chat).
+    The DB is authoritative; the cache is only an optimization."""
+    await upsert_nodes(session, shared_path_nodes())
+    await rebuild_ancestor_paths(session, "BOI")
+    await session.commit()
+
+    scoped = await branch_scope(
+        session, "BOI", RegionalScope(name=None, explicit=False), _BrokenRedis()
+    )
+    assert len(scoped.branch_node_ids) == 3

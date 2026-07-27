@@ -12,14 +12,28 @@ is idempotent.
 import asyncio
 import logging
 import re
+from typing import Any
 
 import aio_pika
 
 logger = logging.getLogger(__name__)
 
-EXCHANGE_NAME = "iot.events.topic"
-CATCH_ALL_QUEUE = "iot.events"
+# aio_pika.abc.Arguments is not re-exported for type checkers; alias it here so the
+# shared QUEUE_ARGS constant type-checks at every declare_queue call site.
+Arguments = dict[str, Any]
+
+# v2 owns a fully separate namespace on the broker. The Java stack published Java-shaped
+# messages straight into `iot.events` with its own `iot.dlx`; those payloads do not parse
+# as EventParse (no tenant_id, camelCase deviceId), so sharing either name would dead-letter
+# 20k messages and let the two consumers compete. Separate names let both stacks run in
+# parallel through cutover.
+EXCHANGE_NAME = "v2.events.topic"
+CATCH_ALL_QUEUE = "v2.events"
 CATCH_ALL_BINDING = "customer.#"
+DLX_NAME = "v2.dlx"
+DLQ_NAME = "v2.events.dead"
+# Every v2 queue carries this, so a rejected message lands in v2's own dead-letter queue.
+QUEUE_ARGS: Arguments = {"x-dead-letter-exchange": DLX_NAME}
 
 
 def routing_key_for(customer: str | None) -> str:
@@ -38,12 +52,10 @@ async def declare_topology(
     exchange = await channel.declare_exchange(
         EXCHANGE_NAME, aio_pika.ExchangeType.TOPIC, durable=True
     )
-    dlx = await channel.declare_exchange("iot.dlx", aio_pika.ExchangeType.FANOUT, durable=True)
-    dlq = await channel.declare_queue("iot.events.dead", durable=True)
+    dlx = await channel.declare_exchange(DLX_NAME, aio_pika.ExchangeType.FANOUT, durable=True)
+    dlq = await channel.declare_queue(DLQ_NAME, durable=True)
     await dlq.bind(dlx)
-    catch_all = await channel.declare_queue(
-        CATCH_ALL_QUEUE, durable=True, arguments={"x-dead-letter-exchange": "iot.dlx"}
-    )
+    catch_all = await channel.declare_queue(CATCH_ALL_QUEUE, durable=True, arguments=QUEUE_ARGS)
     await catch_all.bind(exchange, routing_key=CATCH_ALL_BINDING)
     return exchange
 
