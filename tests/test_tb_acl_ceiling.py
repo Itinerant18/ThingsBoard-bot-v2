@@ -142,6 +142,114 @@ async def test_chat_refuses_rather_than_500s_when_permissions_unconfirmed() -> N
     assert "could not confirm" in answer.text.lower()
 
 
+class _FakeClient:
+    """Stands in for UserAwareThingsBoardClient with VERBATIM production response
+    shapes, captured from app.swatch360.seple.in on 2026-07-27."""
+
+    def __init__(self, user: dict, customer_page: dict, tenant_page: dict) -> None:
+        self._user, self._customer_page, self._tenant_page = user, customer_page, tenant_page
+        self.calls: list[str] = []
+
+    async def current_user(self):
+        self.calls.append("current_user")
+        return self._user
+
+    async def devices(self, customer_id: str, page_size: int = 100):
+        self.calls.append(f"customer:{customer_id}")
+        return self._customer_page
+
+    async def tenant_devices(self, page_size: int = 100):
+        self.calls.append("tenant")
+        return self._tenant_page
+
+    async def close(self) -> None:
+        pass
+
+
+def _install(monkeypatch, client):
+    from app.auth import tb_acl
+
+    monkeypatch.setattr(tb_acl, "UserAwareThingsBoardClient", lambda s, t: client)
+    return tb_acl
+
+
+class _NoCache:
+    async def get(self, k):
+        return None
+
+    async def set(self, k, v, **kw):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_tenant_admin_uses_tenant_devices_not_its_null_customer(monkeypatch) -> None:
+    """A tenant admin's customerId is ThingsBoard's null-UUID sentinel
+    (13814000-1dd2-11b2-8080-808080808080), which is not a real customer and 404s.
+    Authority must be checked FIRST — reversing the branch order would send every
+    admin to a nonexistent customer and refuse them on every question.
+    """
+    client = _FakeClient(
+        user={
+            "authority": "TENANT_ADMIN",
+            "email": "info@seple.in",
+            "customerId": {"entityType": "CUSTOMER", "id": "13814000-1dd2-11b2-8080-808080808080"},
+            "tenantId": {"entityType": "TENANT", "id": "24d74bb0-2061-11ee-86d5-f58fb189657b"},
+        },
+        customer_page={"data": [{"id": {"id": "should-not-be-used"}}]},
+        tenant_page={"data": [{"id": {"id": f"dev-{i}"}} for i in range(148)]},
+    )
+    tb_acl = _install(monkeypatch, client)
+    ids = await tb_acl.authorized_device_ids(SETTINGS, "admin-token", _NoCache())
+    assert len(ids) == 148
+    assert "tenant" in client.calls
+    assert not any(c.startswith("customer:") for c in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_customer_user_uses_the_nested_customer_id(monkeypatch) -> None:
+    """customerId arrives as {"entityType": ..., "id": ...}, not a bare string."""
+    client = _FakeClient(
+        user={
+            "authority": "CUSTOMER_USER",
+            "customerId": {"entityType": "CUSTOMER", "id": "fb98a600-2778-11f1-9cdc-43ca8fc8dcc9"},
+        },
+        customer_page={"data": [{"id": {"id": f"dev-{i}"}} for i in range(100)]},
+        tenant_page={"data": []},
+    )
+    tb_acl = _install(monkeypatch, client)
+    ids = await tb_acl.authorized_device_ids(SETTINGS, "user-token", _NoCache())
+    assert len(ids) == 100
+    assert "customer:fb98a600-2778-11f1-9cdc-43ca8fc8dcc9" in client.calls
+
+
+@pytest.mark.asyncio
+async def test_user_with_no_customer_is_authorized_for_nothing(monkeypatch) -> None:
+    client = _FakeClient(
+        user={"authority": "CUSTOMER_USER", "customerId": None},
+        customer_page={"data": [{"id": {"id": "x"}}]},
+        tenant_page={"data": [{"id": {"id": "y"}}]},
+    )
+    tb_acl = _install(monkeypatch, client)
+    assert await tb_acl.authorized_device_ids(SETTINGS, "tok", _NoCache()) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_thingsboard_failure_raises_rather_than_returning_empty(monkeypatch) -> None:
+    """An empty set would look like "authorized for nothing" and silently answer
+    with no data; the caller must be able to tell the difference."""
+    from app.auth import tb_acl
+
+    class Boom(_FakeClient):
+        async def current_user(self):
+            raise RuntimeError("401 Unauthorized")
+
+    monkeypatch.setattr(
+        tb_acl, "UserAwareThingsBoardClient", lambda s, t: Boom({}, {"data": []}, {"data": []})
+    )
+    with pytest.raises(PermissionCheckUnavailable):
+        await tb_acl.authorized_device_ids(SETTINGS, "expired", _NoCache())
+
+
 @pytest.mark.asyncio
 async def test_no_prefix_yields_empty_scope_without_calling_thingsboard(monkeypatch) -> None:
     async def never(settings, token, redis):
