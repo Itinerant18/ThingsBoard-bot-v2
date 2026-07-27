@@ -1,0 +1,65 @@
+name: CI
+
+# Deploy runs only on a direct push to main. pull_request is deliberately gate-only:
+# this repository is public, so a fork PR must never reach the deploy job or the
+# secrets it uses.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # Two deploys racing on one host would interleave `git reset` with `compose up`.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: lint + types + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen || uv sync
+
+      - name: Ruff
+        run: uv run ruff check app tests
+
+      - name: Mypy (strict)
+        # app only — the test suite is not type-clean and gating on it would block
+        # every push for pre-existing reasons unrelated to the change under review.
+        run: uv run mypy app
+
+      - name: Tests
+        # Docker is available on GitHub runners, so the testcontainers suites run here
+        # even though they are skipped on a dev box without Docker started.
+        run: uv run pytest -q
+
+  deploy:
+    name: deploy to EC2
+    needs: gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          test -n "$SSH_KEY" || { echo "EC2_SSH_KEY secret is not set"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # The host key is pinned on first use and the key is locked to a forced
+          # command, so an unknown-host prompt here means something changed — fail loudly
+          # rather than accepting whatever answers on port 22.
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # No command is passed: authorized_keys forces ~/deploy.sh regardless.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "$USER@$HOST"
