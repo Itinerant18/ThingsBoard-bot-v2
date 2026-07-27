@@ -285,3 +285,53 @@ lines/day from live sync alone.
 ```bash
 LOG_LEVEL=DEBUG    # override in .env when debugging; default INFO
 ```
+
+## Telemetry history (Tiger DB)
+
+Two hypertables, both compressed after 7 days with 365-day retention:
+
+| table | fed by | holds |
+|---|---|---|
+| `device_telemetry` | live sync (all devices) + webhook consumer | every device key, one row per key per observation |
+| `device_event` | webhook consumer only | raw event payloads, for audit |
+
+**ThingsBoard keeps no history for ATTRIBUTES** — only current values — and most fleet
+state arrives as attributes. `device_telemetry` is therefore the only place that
+history will ever exist. Losing it cannot be undone by re-pulling.
+
+```bash
+# what is being captured
+docker logs chatbot-v2 2>&1 | grep 'LIVE-SYNC.*telemetry rows'
+
+# coverage + size
+docker exec chatbot-v2 python -c "
+import asyncio,os,asyncpg
+async def m():
+    u=os.environ['DATABASE_URL'].replace('postgresql+asyncpg://','postgresql://').replace('?ssl=require','')
+    c=await asyncpg.connect(u,ssl='require')
+    print('rows   :', await c.fetchval('SELECT count(*) FROM device_telemetry'))
+    print('devices:', await c.fetchval('SELECT count(DISTINCT device_id) FROM device_telemetry'))
+    print('size   :', await c.fetchval(\"SELECT pg_size_pretty(hypertable_size('device_telemetry'))\"))
+    await c.close()
+asyncio.run(m())"
+```
+
+### Write mode
+
+`TELEMETRY_WRITE_MODE=changed` (default) writes a row only when a key's value differs
+from the last observation. Every key is still stored — a value is a step function
+between observations, so value-at-time-T is exact via the last row before T. `all`
+stores every observation, which is ~212M rows/day across 128 devices at a 60s interval.
+
+### Backfill
+
+Recovers the TIMESERIES subset ThingsBoard still retains. Roughly 136k rows and ~5
+minutes per device over a 365-day window, so the full fleet is hours of work and
+several GB — pick the window deliberately.
+
+```bash
+docker exec chatbot-v2 python -m scripts.backfill_telemetry --days 30
+docker exec chatbot-v2 python -m scripts.backfill_telemetry --days 365 --device <uuid>
+```
+
+Idempotent: ON CONFLICT DO NOTHING on `(device_id, key, time)`, so re-runs are safe.
