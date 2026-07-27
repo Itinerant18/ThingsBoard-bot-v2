@@ -200,7 +200,14 @@ curl "http://localhost:8000/device/<device-uuid>/chart?key=battery_status&hours=
 
 ## Production deploy (EC2)
 
-The host runs `chatbot-v2` + `chatbot-v2-consumer` behind the existing `caddy-proxy`.
+The host runs three containers, all in this one compose project: `chatbot-v2`,
+`chatbot-v2-consumer`, and `caddy-proxy` (TLS termination, adopted from the retired
+Java project). The `caddy_data` / `caddy_config` volumes are declared **external**
+under their original `thingsboard-bot_` names so the Let's Encrypt certificates
+survive — never let compose create fresh ones or certs get re-issued.
+
+The shared network `thingsboard-bot_default` is also external and predates this
+project; it is kept only because renaming it would mean recreating every container.
 `~/ThingsBoard-Bot-v2/` is a git checkout of this repo, so deploying is pull + rebuild —
 do NOT scp files in, or the host silently diverges from what the repo says is running.
 
@@ -220,10 +227,18 @@ Verify the deploy — an app INFO line proves logging works, and the per-custome
 sync summary proves the scheduler ran:
 
 ```bash
-docker ps --format '{{.Names}} | {{.Status}}'
+docker ps --format '{{.Names}} | {{.Status}}'       # expect all three up
 docker logs chatbot-v2 2>&1 | grep 'LIVE-SYNC'      # expect "synced N/N" per customer
 docker logs chatbot-v2 2>&1 | grep -ci traceback    # expect 0
 docker exec chatbot-v2 python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8083/health').status)"
+```
+
+From outside the host — this is the check that actually proves TLS survived a
+caddy change (ssl_verify=0 means the certificate validated):
+
+```bash
+curl -sS -o /dev/null -w "health=%{http_code} ssl_verify=%{ssl_verify_result}\n" \
+  https://3.7.240.120.nip.io/health
 ```
 
 Rollback:
