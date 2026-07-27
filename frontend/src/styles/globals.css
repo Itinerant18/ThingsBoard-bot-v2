@@ -1,0 +1,250 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+@theme {
+  --color-brand-bg: #F4F6F9;
+  --color-brand-surface: #FFFFFF;
+  --color-brand-text: #0F172A;
+  --color-brand-border: #E2E8F0;
+  --color-accent-blue: #2563EB;
+}
+
+@layer base {
+  /* Make the app fill whatever iframe/container size ThingsBoard gives it. */
+  html {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    height: 100%;
+    width: 100%;
+    background-color: #F4F6F9 !important;
+    background: #F4F6F9 !important;
+    color: #0F172A;
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    overflow: hidden;
+    font-size: clamp(11px, 1.3vw + 0.4vh, 14px);
+  }
+
+  #root {
+    height: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: #F4F6F9;
+    overflow: hidden;
+    pointer-events: auto;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-weight: 700;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Clean grid background
+   ───────────────────────────────────────────────────────── */
+.grid-bg {
+  background-color: #F4F6F9;
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px, 32px 32px;
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Midnight Slate Header Bar
+   ───────────────────────────────────────────────────────── */
+.brushed-metal-header {
+  background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Input Container
+   ───────────────────────────────────────────────────────── */
+.inset-well {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: all 0.2s ease;
+}
+.inset-well:focus-within {
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Primary Blue Action Button
+   ───────────────────────────────────────────────────────── */
+.brass-button {
+  background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+  border: 1px solid #1D4ED8;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+  color: #FFFFFF;
+  font-weight: 600;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.brass-button:hover {
+  background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+  box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3);
+}
+.brass-button:active {
+  background: linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%);
+  transform: translateY(1px);
+}
+.brass-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: White Cards
+   ───────────────────────────────────────────────────────── */
+.paper-card {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  transition: all 0.2s ease;
+}
+.paper-card:hover {
+  border-color: #3B82F6;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.1);
+  transform: translateY(-1px);
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Dark Slate User Bubble
+   ───────────────────────────────────────────────────────── */
+.leather-bubble {
+  background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+  color: #FFFFFF;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Pill Badges / Recommendation Tags
+   ───────────────────────────────────────────────────────── */
+.brass-tag {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 20px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  font-weight: 600;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  color: #334155;
+}
+.brass-tag:hover {
+  background: #EFF6FF;
+  border-color: #93C5FD;
+  color: #1D4ED8;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
+}
+.brass-tag:active {
+  transform: translateY(0px);
+}
+
+/* ─────────────────────────────────────────────────────────
+   DASHBOARD THEME: Status LED (Online badge)
+   ───────────────────────────────────────────────────────── */
+.status-led {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 20px;
+}
+
+/* ─────────────────────────────────────────────────────────
+   SCROLLBAR: Minimal modern scrollbar
+   ───────────────────────────────────────────────────────── */
+.chat-messages {
+  scroll-behavior: smooth;
+}
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-messages::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* ─────────────────────────────────────────────────────────
+   ANIMATIONS
+   ───────────────────────────────────────────────────────── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.message-enter {
+  animation: fadeInUp 0.25s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes bounce-typing {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+.typing-dot {
+  animation: bounce-typing 1.4s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) {
+  animation-delay: 160ms;
+}
+.typing-dot:nth-child(3) {
+  animation-delay: 320ms;
+}
+
+/* Streaming cursor */
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background-color: #2563EB;
+  border-radius: 1px;
+  animation: streaming-cursor-blink 1s steps(2, start) infinite;
+}
+@keyframes streaming-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}

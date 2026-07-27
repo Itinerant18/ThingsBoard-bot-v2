@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -14,6 +16,7 @@ from app.query.contracts import RequestContext
 from app.query.memory import session_key
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -72,9 +75,48 @@ async def ask_stream(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> EventSourceResponse:
-    result = await run_chat(payload, tenant, db, redis, request)
+    """SSE endpoint consumed by the chat widget in frontend/.
+
+    The widget's frame parser only acts on `token`, `done` and `error`; any other
+    event name is dropped silently, so it would render an empty bubble rather than
+    an error. The event names below are therefore part of the contract — see
+    frontend/src/context/ChatContext.tsx.
+
+    There are no `token` frames: orchestrator.ask() computes a complete answer
+    before returning, so there is nothing to stream incrementally. A `done`-only
+    stream renders correctly (the widget finalizes on `done` whether or not tokens
+    preceded it); emitting fake token chunks would only simulate streaming.
+
+    NOTE: the widget also sends X-TB-Host. It is deliberately NOT read here —
+    ThingsBoard's base URL comes from settings and is validated by
+    assert_allowed_tb_url, and honouring a client-supplied host would be an SSRF
+    hole.
+    """
 
     async def events() -> AsyncIterator[dict[str, str]]:
-        yield {"event": "answer", "data": json.dumps(result)}
+        try:
+            result = await run_chat(payload, tenant, db, redis, request)
+        except Exception:
+            logger.exception("chat stream failed")
+            # The stream has already begun (200 + headers sent), so an exception
+            # cannot become an HTTP error status — it must be reported in-band or
+            # the widget hangs on a typing indicator until the socket closes.
+            yield {
+                "event": "error",
+                "data": json.dumps({"errorMessage": "Something went wrong answering that."}),
+            }
+            return
+        yield {
+            "event": "done",
+            "data": json.dumps(
+                {
+                    **result,
+                    # The widget reads these two explicitly; leaving them undefined
+                    # makes it render the error branch on a perfectly good answer.
+                    "error": False,
+                    "timestamp": int(time.time() * 1000),
+                }
+            ),
+        }
 
     return EventSourceResponse(events())

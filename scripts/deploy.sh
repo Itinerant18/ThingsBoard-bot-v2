@@ -32,6 +32,11 @@ except Exception:
 " 2>/dev/null
 }
 
+# The image now has a node build stage, so every deploy adds build-cache layers on a
+# host with ~2.5 GB free. Trim the cache but keep a working set, otherwise a deploy
+# eventually fails on a full disk rather than on anything to do with the code.
+docker builder prune -f --keep-storage 2GB >/dev/null 2>&1 || true
+
 for attempt in $(seq 1 30); do
   if healthy; then
     echo "==> healthy after ${attempt} attempt(s)"

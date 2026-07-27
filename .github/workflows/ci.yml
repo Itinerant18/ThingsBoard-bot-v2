@@ -56,6 +56,19 @@ jobs:
         # even though they are skipped on a dev box without Docker started.
         run: uv run pytest -q
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The image builds this same bundle, so a TypeScript error would otherwise fail
+      # the docker build during deploy — after the gate has already gone green.
+      - name: Build chat widget
+        run: npm ci && npm run build
+        working-directory: frontend
+
   deploy:
     name: deploy to EC2
     needs: gate

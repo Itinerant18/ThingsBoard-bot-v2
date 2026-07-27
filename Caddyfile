@@ -29,7 +29,10 @@
 
 	# SSE endpoint: disable proxy response buffering so chat tokens stream in real time
 	# instead of arriving in one burst at the end.
-	@sse path /api/v1/chat/ask/stream
+	# v2 mounts the chat router without a prefix, so the SSE route is /ask/stream —
+	# not the Java app's /api/v1/chat/ask/stream. Matching the old path here would
+	# silently reapply response buffering to the stream.
+	@sse path /ask/stream
 	reverse_proxy @sse chatbot:8083 {
 		flush_interval -1
 		# Long-lived stream: don't cut the connection mid-generation.

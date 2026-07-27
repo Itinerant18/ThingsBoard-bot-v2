@@ -1,251 +1,32 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ThingsBoard Bot v2 — Chat Tester</title>
-<style>
-  :root {
-    --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
-    --muted: #8b93a7; --accent: #4c8dff; --ok: #3fb950; --err: #f85149; --warn: #d29922;
-  }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f6f7f9; --panel:#fff; --line:#e2e5ea; --fg:#1b1f27; --muted:#5b6472; --accent:#2563eb; }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column;
-  }
-  header {
-    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-  }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  .grow { flex: 1; }
-  .badge {
-    font-size: 12px; padding: 3px 9px; border-radius: 999px;
-    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
-  }
-  .badge.ok { color: var(--ok); border-color: var(--ok); }
-  .badge.err { color: var(--err); border-color: var(--err); }
-  button, input, select, textarea {
-    font: inherit; color: var(--fg); background: var(--bg);
-    border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
-  }
-  button { cursor: pointer; background: var(--panel); }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { max-width: min(860px, 92%); }
-  .msg.user { align-self: flex-end; }
-  .bubble {
-    padding: 10px 13px; border-radius: 12px; background: var(--panel);
-    border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere;
-  }
-  .msg.user .bubble { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .msg.error .bubble { border-color: var(--err); color: var(--err); }
-  .meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
-  .msg.user .meta { text-align: right; }
-  details { margin-top: 6px; }
-  summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-  pre {
-    margin: 6px 0 0; padding: 9px; background: var(--bg); border: 1px solid var(--line);
-    border-radius: 7px; font-size: 12px; overflow-x: auto; max-height: 340px;
-  }
-  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 16px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #q { flex: 1; min-width: 260px; }
-  .samples { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-  .samples button { font-size: 12px; padding: 4px 9px; color: var(--muted); }
-  .hint { font-size: 12px; color: var(--muted); margin-top: 7px; }
-  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
-</style>
-</head>
-<body>
-<header>
-  <h1>ThingsBoard Bot v2 · Chat Tester</h1>
-  <span id="auth" class="badge">no token</span>
-  <span id="who" class="badge" hidden></span>
-  <span class="grow"></span>
-  <label class="badge" style="display:flex;gap:6px;align-items:center;">
-    conv <input id="conv" value="default" style="width:96px;padding:2px 6px;font-size:12px;" />
-  </label>
-  <button id="newconv" title="Start a fresh conversation id (clears server-side memory context)">new</button>
-  <button id="settoken">set token</button>
-  <button id="clear">clear</button>
-</header>
-
-<div id="log"></div>
-
-<footer>
-  <div class="samples" id="samples"></div>
-  <div class="row">
-    <input id="q" placeholder="Ask… e.g. battery voltage of Liluah" autocomplete="off" />
-    <button id="send" class="primary">Send</button>
-  </div>
-  <div class="hint">
-    Set the JWT from the browser console:
-    <code>localStorage.setItem('tb_jwt', 'PASTE_JWT')</code> then reload — or use <b>set token</b>.
-  </div>
-</footer>
-
-<script>
-const TOKEN_KEY = 'tb_jwt';
-const $ = (id) => document.getElementById(id);
-const log = $('log');
-
-const SAMPLES = [
-  'how many devices are online',
-  'list my branches',
-  'battery voltage of Liluah',
-  'gateway status of Liluah',
-  'cctv status of Liluah',
-  'and its hdd error status?',
-  'any alarms',
-  'subsystem status of Liluah',
-];
-
-function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
-
-// Decode a JWT payload for display only — never used for auth decisions, the
-// server verifies the token. Handles base64url + unicode.
-function decodeJwt(token) {
-  try {
-    const part = token.split('.')[1];
-    const b64 = part.replace(/-/g, '+').replace(/_/g, '/').padEnd(part.length + (4 - part.length % 4) % 4, '=');
-    const json = decodeURIComponent(atob(b64).split('').map(c =>
-      '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
-    return JSON.parse(json);
-  } catch { return null; }
-}
-
-function refreshAuth() {
-  const token = getToken();
-  const badge = $('auth'), who = $('who');
-  if (!token) {
-    badge.textContent = 'no token'; badge.className = 'badge err';
-    who.hidden = true;
-    return;
-  }
-  const claims = decodeJwt(token);
-  if (!claims) {
-    badge.textContent = 'token not a JWT'; badge.className = 'badge err';
-    who.hidden = true;
-    return;
-  }
-  const exp = claims.exp ? new Date(claims.exp * 1000) : null;
-  const expired = exp && exp < new Date();
-  badge.textContent = expired ? `expired ${exp.toLocaleString()}` : 'token set';
-  badge.className = 'badge ' + (expired ? 'err' : 'ok');
-  // Surface the claims that decide scope, so it's obvious who you're testing as.
-  const bits = [claims.sub, claims.firstName || claims.lastName, claims.customerTitle]
-    .filter(Boolean).join(' · ');
-  who.textContent = bits || '(no scope claims)';
-  who.hidden = !bits;
-}
-
-function add(role, text, extra) {
-  const wrap = document.createElement('div');
-  wrap.className = 'msg ' + role;
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  bubble.textContent = text;
-  wrap.appendChild(bubble);
-  if (extra) {
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = extra.meta || '';
-    wrap.appendChild(meta);
-    if (extra.raw !== undefined) {
-      const d = document.createElement('details');
-      d.innerHTML = '<summary>raw response</summary>';
-      const pre = document.createElement('pre');
-      pre.textContent = JSON.stringify(extra.raw, null, 2);
-      d.appendChild(pre);
-      wrap.appendChild(d);
-    }
-  }
-  log.appendChild(wrap);
-  log.scrollTop = log.scrollHeight;
-  return wrap;
-}
-
-async function send() {
-  const q = $('q').value.trim();
-  if (!q) return;
-  const token = getToken();
-  if (!token) { add('error', 'No JWT set. Use "set token" or localStorage.setItem("tb_jwt", "…").'); return; }
-
-  add('user', q);
-  $('q').value = '';
-  $('send').disabled = true;
-  const pending = add('bot', '…');
-  const started = performance.now();
-
-  try {
-    const res = await fetch('/api/v1/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ message: q, conversation_id: $('conv').value || 'default' }),
-    });
-    const ms = Math.round(performance.now() - started);
-    const text = await res.text();
-    let body; try { body = JSON.parse(text); } catch { body = text; }
-    pending.remove();
-
-    if (!res.ok) {
-      const detail = (body && body.detail) ? body.detail : text;
-      add('error', `HTTP ${res.status} — ${detail}`, { meta: `${ms} ms`, raw: body });
-      return;
-    }
-    const parts = [`${ms} ms`];
-    if (body.used_llm) parts.push('llm');
-    if (body.sources && body.sources.length) {
-      parts.push(body.sources.map(s => s.type).join(', '));
-    }
-    add('bot', body.answer ?? '(no answer field)', { meta: parts.join(' · '), raw: body });
-  } catch (err) {
-    pending.remove();
-    add('error', 'Request failed: ' + err.message + ' (is the server running?)');
-  } finally {
-    $('send').disabled = false;
-    $('q').focus();
-  }
-}
-
-$('send').onclick = send;
-$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
-$('clear').onclick = () => { log.innerHTML = ''; };
-$('newconv').onclick = () => {
-  $('conv').value = 'c' + Date.now().toString(36);
-  add('bot', 'New conversation id: ' + $('conv').value + ' — follow-up memory starts fresh.');
-};
-$('settoken').onclick = () => {
-  const cur = getToken();
-  const next = prompt('Paste ThingsBoard JWT (blank clears):', cur);
-  if (next === null) return;
-  if (next.trim()) localStorage.setItem(TOKEN_KEY, next.trim());
-  else localStorage.removeItem(TOKEN_KEY);
-  refreshAuth();
-};
-
-SAMPLES.forEach(s => {
-  const b = document.createElement('button');
-  b.textContent = s;
-  b.onclick = () => { $('q').value = s; $('q').focus(); };
-  $('samples').appendChild(b);
-});
-
-// Console helpers so the token can be set without touching the UI.
-window.setToken = (t) => { localStorage.setItem(TOKEN_KEY, t); refreshAuth(); return 'token set'; };
-window.clearToken = () => { localStorage.removeItem(TOKEN_KEY); refreshAuth(); return 'token cleared'; };
-
-refreshAuth();
-$('q').focus();
-console.info('%cChat tester ready', 'color:#4c8dff;font-weight:bold');
-console.info('Set your JWT:  setToken("<jwt>")   — or  localStorage.setItem("tb_jwt","<jwt>")');
-</script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAI Assistant</title>
+    <meta name="description" content="SAI Assistant — ThingsBoard IoT Network assistant for troubleshooting, telemetry, and active alarms." />
+    <style>
+      html, body, #root {
+        background-color: #E8E0D4 !important;
+        background: #E8E0D4 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        pointer-events: auto !important;
+        height: 100% !important;
+        width: 100% !important;
+        font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      body {
+        overflow: hidden !important;
+        color: #1C1917;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

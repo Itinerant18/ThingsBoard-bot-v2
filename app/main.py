@@ -166,9 +166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if test_settings.app_role in ("all", "ingestion"):
         app.include_router(webhooks.router)
 
-    # Manual chat tester at /ui. Served from the app so it is same-origin with
-    # /api/v1/chat — no CORS entry needed for the browser to send the JWT.
-    ui_dir = Path(__file__).resolve().parent.parent / "frontend"
+    # Chat widget at /ui. Served from the app so it is same-origin with the chat
+    # endpoints — no CORS entry needed for the browser to send the JWT.
+    #
+    # This is the Vite BUILD OUTPUT (frontend/dist), not frontend/ itself: the source
+    # is TSX that no browser can run. The Dockerfile builds it in a node stage. Running
+    # from a source checkout requires `npm --prefix frontend ci && npm --prefix frontend
+    # run build` once, otherwise /ui is simply not mounted rather than serving raw TSX.
+    ui_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if test_settings.serve_ui and ui_dir.is_dir() and test_settings.app_role in ("all", "chat"):
         app.mount("/ui", StaticFiles(directory=ui_dir, html=True), name="ui")
 
