@@ -200,6 +200,23 @@ curl "http://localhost:8000/device/<device-uuid>/chart?key=battery_status&hours=
 
 ## Production deploy (EC2)
 
+**Deploys are automatic.** Every push to `main` runs `.github/workflows/ci.yml`: the
+gate (ruff + mypy + pytest) must pass, then the deploy job SSHes to the host and runs
+`scripts/deploy.sh`, which health-checks the result and rolls back to the previous
+image if the containers do not come up. The manual commands below are the fallback for
+when CI is unavailable, or for debugging on the box.
+
+The CI key is a dedicated deploy key pinned by `~/.ssh/authorized_keys` to a forced
+command (`~/deploy.sh`), so it can trigger a deploy but cannot open a shell or read
+`.env`. Repo secrets: `EC2_SSH_KEY`, `EC2_HOST`, `EC2_USER`.
+
+```bash
+gh run list --limit 5                 # recent pipelines
+gh run watch <run-id> --exit-status   # follow a deploy
+gh run view <run-id> --log-failed     # why it went red
+```
+
+
 The host runs three containers, all in this one compose project: `chatbot-v2`,
 `chatbot-v2-consumer`, and `caddy-proxy` (TLS termination, adopted from the retired
 Java project). The `caddy_data` / `caddy_config` volumes are declared **external**
