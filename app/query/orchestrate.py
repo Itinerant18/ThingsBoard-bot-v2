@@ -1,14 +1,17 @@
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Protocol
 from uuid import UUID
 
-from app.hierarchy.scope import branch_scope, extract_region
+from app.auth.scope_resolver import PermissionCheckUnavailable, resolved_scope
 from app.query import memory
 from app.query.branch_names import BranchGateResult, gate_and_resolve, load_directory
 from app.query.contracts import Answer, ExtractedIntent, Handler, RequestContext
 from app.query.extract import KeywordIntentExtractor
 from app.query.handlers import AlarmDetail, DeviceInventory, GlobalOverview, MetricHandler
+
+logger = logging.getLogger(__name__)
 
 
 class _Extractor(Protocol):
@@ -37,9 +40,10 @@ async def _default_gate(question: str, ctx: RequestContext) -> BranchGateResult:
     directory = await load_directory(ctx.db, ctx.tenant.prefix)
     if not directory.leaves:
         return BranchGateResult()
-    scoped = await branch_scope(
-        ctx.db, ctx.tenant.prefix, extract_region(ctx.tenant.claims), ctx.redis
-    )
+    # Same resolver as chat handlers and the HTTP endpoints. Using raw branch_scope
+    # here would let the gate resolve a branch name to a device ThingsBoard does not
+    # authorize, so the name gate and the data gate would disagree about scope.
+    scoped = await resolved_scope(ctx.db, ctx.redis, ctx.tenant, ctx.tb.settings)
     return gate_and_resolve(question, directory, scoped)
 
 
@@ -58,6 +62,23 @@ class QueryOrchestrator:
         # SECURITY: the unauthorized-branch gate runs BEFORE intent dispatch, so naming
         # a branch outside the caller's scope is refused for every intent (Java parity:
         # UserDataService.detectUnauthorizedBranchName ran ahead of answering).
+        try:
+            return await self._ask(question, ctx, session_id)
+        except PermissionCheckUnavailable:
+            # Fail CLOSED. The local hierarchy over-grants (a customer prefix spans
+            # several ThingsBoard customers), so answering from it when TB cannot
+            # confirm permissions is exactly the leak the ACL check prevents.
+            logger.warning("[TB-ACL] refusing to answer: permissions unconfirmed", exc_info=True)
+            return Answer(
+                "I could not confirm your permissions with ThingsBoard just now, so I "
+                "will not answer rather than risk showing you something outside your "
+                "access. Please retry in a moment.",
+                {"error": "permissions_unavailable"},
+            )
+
+    async def _ask(
+        self, question: str, ctx: RequestContext, session_id: str | None = None
+    ) -> Answer:
         gate = await self.gate(question, ctx)
         if gate.unauthorized_branch is not None:
             return Answer(

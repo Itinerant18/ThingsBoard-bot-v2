@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     frame_ancestors: str = "'self'"
     jwt_signing_key: str = ""
     require_jwt_verification: bool = False
+    # Intersect every answer's device scope with what ThingsBoard authorizes for the
+    # caller. Off means answering from customer-prefix scope alone, which over-grants
+    # whenever a prefix spans several TB customers — emergency rollback only.
+    enforce_tb_device_acl: bool = True
+    tb_acl_cache_seconds: int = 60
     require_webhook_hmac: bool = False
     require_admin_token: bool = False
     strict_customer_mapping: bool = False

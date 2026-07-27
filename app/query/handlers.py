@@ -5,10 +5,11 @@ from typing import Any, Protocol
 
 from sqlalchemy import select
 
+from app.auth.scope_resolver import resolved_scope
 from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
 from app.config import Settings
 from app.db.models import DeviceEvent
-from app.hierarchy.scope import ScopedBranches, branch_scope, extract_region
+from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
 from app.normalization.snapshot import BranchSnapshot
 from app.query import cctv
@@ -32,11 +33,14 @@ ScopeFn = Callable[[RequestContext], Awaitable[ScopedBranches]]
 
 
 async def _default_scope(ctx: RequestContext) -> ScopedBranches:
-    if not ctx.tenant.prefix:
-        return ScopedBranches(branch_node_ids=[], tb_device_ids=[])
-    return await branch_scope(
-        ctx.db, ctx.tenant.prefix, extract_region(ctx.tenant.claims), ctx.redis
-    )
+    """Chat's scope, from the same resolver the HTTP endpoints use.
+
+    This deliberately does NOT call branch_scope() directly. It used to, which meant
+    the chat path and app/deps.py built the same security boundary twice — so a fix
+    to one silently missed the other. PermissionCheckUnavailable propagates to the
+    orchestrator, which turns it into a refusal message.
+    """
+    return await resolved_scope(ctx.db, ctx.redis, ctx.tenant, ctx.tb.settings)
 
 
 class GlobalOverview:

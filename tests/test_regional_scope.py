@@ -132,21 +132,32 @@ class TestRegionalScope:
         assert branch_ids == {"BOI-MALDATOWN", "BOI-PARKST", "BOI-DWARKA"}
 
 class TestScopedBranchesWiring:
-    """Regression: deps.scoped_branches must pass the REAL extracted scope to
-    branch_scope — an explicit region degraded to guessed would fail OPEN."""
+    """Regression: the REAL extracted scope must reach branch_scope — an explicit
+    region degraded to guessed would fail OPEN.
+
+    branch_scope now sits behind app.auth.scope_resolver, which every caller
+    (deps.scoped_branches, chat handlers, the branch-name gate) goes through, so the
+    patch target moved there.
+    """
 
     async def test_explicit_scope_survives_dependency_wiring(self, monkeypatch) -> None:
         from app import deps
+        from app.auth import scope_resolver
         from app.auth.jwt import TenantContext
+        from app.config import Settings
         from app.hierarchy.scope import ScopedBranches
 
         captured: dict[str, object] = {}
 
         async def fake_branch_scope(session, prefix, scope, redis):
             captured["scope"] = scope
-            return ScopedBranches(branch_node_ids=[], tb_device_ids=[])
+            return ScopedBranches(branch_node_ids=["b1"], tb_device_ids=["d1", "d2"])
 
-        monkeypatch.setattr(deps, "branch_scope", fake_branch_scope)
+        async def fake_acl(settings, token, redis):
+            return frozenset({"d1"})  # ThingsBoard authorizes only d1
+
+        monkeypatch.setattr(scope_resolver, "branch_scope", fake_branch_scope)
+        monkeypatch.setattr(scope_resolver, "authorized_device_ids", fake_acl)
         tenant = TenantContext(
             tenant_id="t",
             customer_id="c",
@@ -155,7 +166,14 @@ class TestScopedBranchesWiring:
             prefix="BOI",
             user_token="tok",
         )
-        await deps.scoped_branches(tenant, db=None, redis=None)  # type: ignore[arg-type]
+        result = await deps.scoped_branches(
+            tenant,
+            db=None,  # type: ignore[arg-type]
+            redis=None,  # type: ignore[arg-type]
+            settings=Settings(database_url="postgresql+asyncpg://unused/unused"),
+        )
         scope = captured["scope"]
         assert scope.name == "ZO PATNA"
         assert scope.explicit is True, "explicit flag lost in wiring => fail-closed broken"
+        # And the ThingsBoard ceiling is applied on the way out.
+        assert result.tb_device_ids == ["d1"], "TB ACL not intersected in the deps path"

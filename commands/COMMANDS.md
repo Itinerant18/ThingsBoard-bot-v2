@@ -195,6 +195,8 @@ curl "http://localhost:8000/device/<device-uuid>/chart?key=battery_status&hours=
 | `WEBHOOK_PUBLISH_TO_QUEUE` | `true` | webhook enqueues to RabbitMQ |
 | `WEBHOOK_DIRECT_WRITE_FALLBACK` | `true` | broker down → write DB directly |
 | `REQUIRE_ADMIN_TOKEN` / `ADMIN_TOKEN` | off / empty | gate admin endpoints |
+| `ENFORCE_TB_DEVICE_ACL` | `true` | intersect every answer with ThingsBoard's device ACL — **do not disable** |
+| `TB_ACL_CACHE_SECONDS` | `60` | how long a caller's authorized device set is cached |
 | `REQUIRE_WEBHOOK_HMAC` / `WEBHOOK_HMAC_SECRET` | off / empty | webhook HMAC verification |
 | `OPENAI_API_KEY` | empty | enables LLM intent extraction (falls back to keywords) |
 

@@ -135,6 +135,25 @@ class UserAwareThingsBoardClient:
     def _headers(self) -> dict[str, str]:
         return {"X-Authorization": f"Bearer {self._user_token}"}
 
+    async def current_user(self) -> Any:
+        """ThingsBoard's own answer to "who is this token?".
+
+        Authoritative identity: a 200 proves the CALLER's token is valid (signature,
+        expiry, session) without this service holding any signing key, and the
+        returned `authority` is ThingsBoard's verdict rather than a self-asserted
+        `scopes` claim — the distinction the Java build got wrong.
+
+        This lives on the user-aware client ONLY. On the service client it would
+        describe the service account, which is precisely the wrong answer.
+        """
+        return await self._get("/api/auth/user")
+
+    async def tenant_devices(self, page_size: int = 100) -> Any:
+        """Every device in the tenant. ThingsBoard returns 403 unless the CALLER is
+        really a tenant admin — verified empirically against production — which is
+        what makes it safe to call on their behalf."""
+        return await fetch_all_pages(self._get, "/api/tenant/devices", page_size)
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = await self.http.get(path, params=params, headers=self._headers())
         response.raise_for_status()

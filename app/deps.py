@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.customers import resolve_customer_prefix
 from app.auth.jwt import TenantContext, decode_tenant_token
+from app.auth.scope_resolver import PermissionCheckUnavailable, resolved_scope
 from app.clients.thingsboard import UserAwareThingsBoardClient
 from app.config import Settings, get_settings
-from app.hierarchy.scope import ScopedBranches, branch_scope, extract_region
+from app.hierarchy.scope import ScopedBranches, extract_region
 
 
 def settings_dep() -> Settings:
@@ -65,18 +66,26 @@ async def scoped_branches(
     tenant: Annotated[TenantContext, Depends(current_tenant)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(settings_dep)],
 ) -> ScopedBranches:
-    """Get scoped branches for the current tenant's region.
+    """Get scoped branches for the current tenant, bounded by ThingsBoard's ACL.
 
     SECURITY: the scope MUST come from extract_region(claims) so the explicit
     flag survives — an explicit-but-unresolvable region fails CLOSED (empty),
     a guessed one fails open. Degrading explicit to guessed here would turn a
-    scope denial into full-inventory access.
-    """
-    if not tenant.prefix:
-        return ScopedBranches(branch_node_ids=[], tb_device_ids=[])
+    scope denial into full-inventory access. resolved_scope() then intersects
+    with ThingsBoard's device ACL, which caps the fail-open case.
 
-    return await branch_scope(db, tenant.prefix, extract_region(tenant.claims), redis)
+    A 503 (not an empty scope) when TB is unreachable: answering "no devices"
+    would be indistinguishable from a real empty result and quietly wrong.
+    """
+    try:
+        return await resolved_scope(db, redis, tenant, settings)
+    except PermissionCheckUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not confirm your permissions with ThingsBoard. Please retry.",
+        ) from exc
 
 
 async def user_tb_client(
