@@ -283,6 +283,26 @@ function isTrustedOrigin(origin: string): boolean {
   return allowedOrigins().includes(origin)
 }
 
+/**
+ * True when the token carries an `exp` already in the past.
+ *
+ * Advisory and unverified — it exists to avoid PREFERRING a dead token over a live
+ * one, never to authorize anything. ThingsBoard remains the judge; this can only
+ * reject early. (Java shipped the same helper in JwtParserUtil.isExpired and then
+ * never called it.)
+ */
+function isExpiredToken(token: string): boolean {
+  try {
+    const raw = token.replace(/^Bearer\s+/i, '').trim()
+    const parts = raw.split('.')
+    if (parts.length < 2) return false
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()
+  } catch {
+    return false // unparseable: let the backend and ThingsBoard decide
+  }
+}
+
 function getJwtToken(): string | null {
   // The token arrives via origin-checked postMessage (preferred). As a same-origin bootstrap for
   // iframe embedding we may read it once from the parent window. It is intentionally NOT read from
@@ -301,13 +321,32 @@ function getJwtToken(): string | null {
   // only — ThingsBoard re-validates it on every privileged call — so this does not grant access on
   // its own.
   try {
-    // tb_jwt is the key the v2 single-file tester used (now at /ui/tester.html); keep
-    // reading it so a token already set in a browser keeps working after this upgrade.
-    const ownToken =
-      window.localStorage.getItem('jwt_token') ||
-      window.localStorage.getItem('tb_token') ||
-      window.localStorage.getItem('tb_jwt')
-    if (ownToken) return ownToken
+    // Pick the first token that is actually USABLE, not merely the first key that
+    // exists. Taking the first non-empty value meant a stale jwt_token left over from
+    // earlier testing shadowed a freshly-set tb_jwt: the widget confidently sent a
+    // dead token, ThingsBoard returned 401, and the user saw a "retry in a moment"
+    // message for something retrying could never fix.
+    // tb_jwt is the key the v2 single-file tester used (now at /ui/tester.html).
+    const keys = ['jwt_token', 'tb_token', 'tb_jwt']
+    const candidates = keys
+      .map(k => ({ key: k, token: window.localStorage.getItem(k) }))
+      .filter((c): c is { key: string; token: string } => Boolean(c.token))
+
+    const usable = candidates.find(c => !isExpiredToken(c.token))
+    if (usable) {
+      const stale = candidates.filter(c => c !== usable).map(c => c.key)
+      if (stale.length) {
+        console.warn(`[chat] ignoring expired/stale token(s) in: ${stale.join(', ')}`)
+      }
+      return usable.token
+    }
+    if (candidates.length) {
+      // All present tokens are expired. Return one anyway so the backend can answer
+      // with its "session expired, sign in again" message rather than the widget
+      // silently behaving as if no one had ever logged in.
+      console.warn('[chat] every stored ThingsBoard token is expired — sign in again')
+      return candidates[0].token
+    }
   } catch (e) {
     console.debug('Cannot access localStorage', e)
   }

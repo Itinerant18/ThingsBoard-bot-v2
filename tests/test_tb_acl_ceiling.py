@@ -250,6 +250,109 @@ async def test_thingsboard_failure_raises_rather_than_returning_empty(monkeypatc
         await tb_acl.authorized_device_ids(SETTINGS, "expired", _NoCache())
 
 
+def _token(exp_offset_seconds: int) -> str:
+    import base64
+    import json
+    import time
+
+    def seg(d: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+
+    return f"{seg({'alg': 'HS512'})}.{seg({'exp': int(time.time()) + exp_offset_seconds})}.sig"
+
+
+class TestExpiryHandling:
+    """A dead token must be reported as 'sign in again', never as 'retry in a moment'.
+
+    Java shipped JwtParserUtil.isExpired and never called it, and its frontend had no
+    401 handling at all — so an expired session degraded silently. These pin the
+    behaviour we adopted instead.
+    """
+
+    def test_is_expired_detects_a_dead_token(self) -> None:
+        from app.auth.tb_acl import is_expired
+
+        assert is_expired(_token(-60)) is True
+        assert is_expired(_token(3600)) is False
+        assert is_expired("Bearer " + _token(-60)) is True  # prefix tolerated
+
+    def test_is_expired_fails_open_on_junk(self) -> None:
+        """Unparseable input must not be declared expired — ThingsBoard is the judge,
+        and a false 'expired' would lock out a caller holding a valid token."""
+        from app.auth.tb_acl import is_expired
+
+        for junk in ("", "not-a-jwt", "a.b", "...."):
+            assert is_expired(junk) is False
+
+    @pytest.mark.asyncio
+    async def test_expired_token_never_reaches_thingsboard(self, monkeypatch) -> None:
+        from app.auth import tb_acl
+
+        def explode(settings, token):
+            raise AssertionError("must not call ThingsBoard for a known-dead token")
+
+        monkeypatch.setattr(tb_acl, "UserAwareThingsBoardClient", explode)
+        with pytest.raises(tb_acl.SessionExpired):
+            await tb_acl.authorized_device_ids(SETTINGS, _token(-60), _NoCache())
+
+    @pytest.mark.asyncio
+    async def test_thingsboard_401_is_session_expired_not_a_generic_outage(
+        self, monkeypatch
+    ) -> None:
+        import httpx
+
+        from app.auth import tb_acl
+
+        class Rejecting(_FakeClient):
+            async def current_user(self):
+                request = httpx.Request("GET", "https://tb/api/auth/user")
+                response = httpx.Response(401, request=request)
+                raise httpx.HTTPStatusError("401", request=request, response=response)
+
+        monkeypatch.setattr(
+            tb_acl,
+            "UserAwareThingsBoardClient",
+            lambda s, t: Rejecting({}, {"data": []}, {"data": []}),
+        )
+        with pytest.raises(tb_acl.SessionExpired):
+            await tb_acl.authorized_device_ids(SETTINGS, _token(3600), _NoCache())
+
+    @pytest.mark.asyncio
+    async def test_server_error_stays_a_generic_outage(self, monkeypatch) -> None:
+        """A 502 IS transient — it must not tell the user to sign in again."""
+        import httpx
+
+        from app.auth import tb_acl
+
+        class Broken(_FakeClient):
+            async def current_user(self):
+                request = httpx.Request("GET", "https://tb/api/auth/user")
+                response = httpx.Response(502, request=request)
+                raise httpx.HTTPStatusError("502", request=request, response=response)
+
+        monkeypatch.setattr(
+            tb_acl,
+            "UserAwareThingsBoardClient",
+            lambda s, t: Broken({}, {"data": []}, {"data": []}),
+        )
+        with pytest.raises(PermissionCheckUnavailable) as caught:
+            await tb_acl.authorized_device_ids(SETTINGS, _token(3600), _NoCache())
+        assert not isinstance(caught.value, tb_acl.SessionExpired)
+
+    @pytest.mark.asyncio
+    async def test_chat_tells_the_user_to_sign_in_rather_than_retry(self) -> None:
+        from app.auth.tb_acl import SessionExpired
+        from app.query.orchestrate import QueryOrchestrator
+
+        async def dead_session(question, ctx):
+            raise SessionExpired("thingsboard returned 401")
+
+        answer = await QueryOrchestrator(gate=dead_session).ask("hi", ctx=None)  # type: ignore[arg-type]
+        assert answer.structured.get("error") == "session_expired"
+        assert "sign in" in answer.text.lower()
+        assert "retry in a moment" not in answer.text.lower()
+
+
 @pytest.mark.asyncio
 async def test_no_prefix_yields_empty_scope_without_calling_thingsboard(monkeypatch) -> None:
     async def never(settings, token, redis):

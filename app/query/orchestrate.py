@@ -5,6 +5,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.auth.scope_resolver import PermissionCheckUnavailable, resolved_scope
+from app.auth.tb_acl import SessionExpired
 from app.query import memory
 from app.query.branch_names import BranchGateResult, gate_and_resolve, load_directory
 from app.query.contracts import Answer, ExtractedIntent, Handler, RequestContext
@@ -64,6 +65,17 @@ class QueryOrchestrator:
         # UserDataService.detectUnauthorizedBranchName ran ahead of answering).
         try:
             return await self._ask(question, ctx, session_id)
+        except SessionExpired:
+            # Distinct from the branch below on purpose: retrying a dead token can
+            # never succeed, so telling the user to "retry in a moment" wastes their
+            # time on the one failure that always needs a human action.
+            logger.info("[TB-ACL] caller token rejected by ThingsBoard")
+            return Answer(
+                "Your ThingsBoard session has expired or was signed out. "
+                "Please sign in to ThingsBoard again and reload this page — "
+                "retrying will not help until you do.",
+                {"error": "session_expired"},
+            )
         except PermissionCheckUnavailable:
             # Fail CLOSED. The local hierarchy over-grants (a customer prefix spans
             # several ThingsBoard customers), so answering from it when TB cannot

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.customers import resolve_customer_prefix
 from app.auth.jwt import TenantContext, decode_tenant_token
 from app.auth.scope_resolver import PermissionCheckUnavailable, resolved_scope
+from app.auth.tb_acl import SessionExpired
 from app.clients.thingsboard import UserAwareThingsBoardClient
 from app.config import Settings, get_settings
 from app.hierarchy.scope import ScopedBranches, extract_region
@@ -81,6 +82,13 @@ async def scoped_branches(
     """
     try:
         return await resolved_scope(db, redis, tenant, settings)
+    except SessionExpired as exc:
+        # 401, not 503: the caller's token is dead. A 503 would tell the client to
+        # retry, which can never succeed until they sign in again.
+        raise HTTPException(
+            status_code=401,
+            detail="Your ThingsBoard session has expired. Please sign in again.",
+        ) from exc
     except PermissionCheckUnavailable as exc:
         raise HTTPException(
             status_code=503,

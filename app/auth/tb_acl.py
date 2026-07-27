@@ -17,10 +17,14 @@ sender wrote there. Reading the claim instead is precisely the Java bug that let
 forged `TENANT_ADMIN` scope unlock every customer's fleet.
 """
 
+import base64
 import hashlib
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
+
+import httpx
 
 from app.clients.thingsboard import UserAwareThingsBoardClient
 from app.config import Settings
@@ -40,6 +44,43 @@ class PermissionCheckUnavailable(Exception):
     explicitly. Every caller fails CLOSED: an unreachable ThingsBoard means we
     refuse to answer, never that we answer from the unchecked local mirror.
     """
+
+
+class SessionExpired(PermissionCheckUnavailable):
+    """ThingsBoard rejected the caller's token (401/403), or it is already expired.
+
+    A subclass so every existing fail-closed path still applies, but callers can tell
+    the two apart — and they must. "Retry in a moment" is correct for an unreachable
+    ThingsBoard and actively misleading for a dead token: no amount of retrying will
+    ever fix it, the user has to sign in again.
+
+    Java classified this correctly at the HTTP layer (exchangeWithRetry retried only
+    5xx and 429, never 401) but never carried the distinction up to the user.
+    """
+
+
+def is_expired(token: str) -> bool:
+    """True if the token carries an `exp` already in the past.
+
+    Advisory pre-flight, on an UNVERIFIED decode: it saves a pointless round-trip to
+    ThingsBoard for a clearly-dead token and lets us name the real problem. A token
+    that looks fine here is still validated by ThingsBoard — this can only reject
+    early, never authorize.
+
+    Ported from Java's JwtParserUtil.isExpired, which was written and documented but
+    never actually called anywhere.
+    """
+    raw = token.removeprefix("Bearer ").strip()
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return False  # not a JWT shape; let ThingsBoard be the judge
+    try:
+        segment = parts[1]
+        payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        exp = payload.get("exp")
+    except (ValueError, TypeError, AttributeError):
+        return False  # unparseable: fail open to ThingsBoard, which will reject it
+    return isinstance(exp, int | float) and exp < time.time()
 
 
 def _cache_key(token: str) -> str:
@@ -73,6 +114,9 @@ async def authorized_device_ids(
     """
     if not user_token:
         raise PermissionCheckUnavailable("no caller token")
+    if is_expired(user_token):
+        # Don't spend a ThingsBoard round-trip proving what the token already says.
+        raise SessionExpired("token expired")
 
     key = _cache_key(user_token)
     try:
@@ -110,8 +154,17 @@ async def authorized_device_ids(
         ids = _device_ids(page)
     except PermissionCheckUnavailable:
         raise
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            # Terminal, not transient — the session is dead or was revoked. Java's
+            # retry logic already treated these as non-retryable; the difference is
+            # that the user now gets told to sign in instead of to retry.
+            logger.info("[TB-ACL] ThingsBoard rejected the caller's token (%s)", status)
+            raise SessionExpired(f"thingsboard returned {status}") from exc
+        logger.warning("[TB-ACL] could not resolve caller permissions", exc_info=True)
+        raise PermissionCheckUnavailable(str(exc)) from exc
     except Exception as exc:
-        # Includes 401 (token expired mid-session) and any transport failure.
         logger.warning("[TB-ACL] could not resolve caller permissions", exc_info=True)
         raise PermissionCheckUnavailable(str(exc)) from exc
     finally:
