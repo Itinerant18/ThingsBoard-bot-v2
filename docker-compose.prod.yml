@@ -33,6 +33,31 @@ services:
     restart: always
     depends_on: [chatbot]
 
+  # Adopted from the old Java project's compose, which held nothing else. The named
+  # volumes are declared external under their ORIGINAL project-prefixed names so the
+  # existing Let's Encrypt certificates carry over — recreating them would re-issue
+  # certs and burn LE rate limit.
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy-proxy
+    restart: always
+    ports:
+      - "80:80"    # required for Let's Encrypt HTTP-01 verification
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # persistent ACME certs
+      - caddy_config:/config
+    depends_on: [chatbot]
+
+volumes:
+  caddy_data:
+    name: thingsboard-bot_caddy_data
+    external: true
+  caddy_config:
+    name: thingsboard-bot_caddy_config
+    external: true
+
 networks:
   default:
     name: thingsboard-bot_default

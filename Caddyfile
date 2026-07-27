@@ -1,0 +1,44 @@
+# Caddy reverse proxy for ThingsBoard-Bot v2.
+#
+# Moved here from the old Java repo, which was the only thing still keeping that
+# directory alive. Explicit config rather than the `caddy reverse-proxy` quick
+# command so SSE streaming, timeouts, and security headers stay pinned.
+#
+# `chatbot` is the compose SERVICE name in docker-compose.prod.yml (the container is
+# named chatbot-v2). Docker's service DNS resolves it on the shared network — renaming
+# that service breaks this file.
+#
+# NOTE: the nip.io address below resolves the host's public IP. Replace it with a real
+# production domain when one is assigned.
+
+{
+	# email for Let's Encrypt; certs persist in the caddy_data volume, which is declared
+	# external in compose so they survive a project rename and avoid LE rate limits.
+	email admin@seple.in
+}
+
+3.7.240.120.nip.io {
+	encode gzip
+
+	# Security headers (CSP frame-ancestors is set by the app itself).
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# SSE endpoint: disable proxy response buffering so chat tokens stream in real time
+	# instead of arriving in one burst at the end.
+	@sse path /api/v1/chat/ask/stream
+	reverse_proxy @sse chatbot:8083 {
+		flush_interval -1
+		# Long-lived stream: don't cut the connection mid-generation.
+		transport http {
+			read_timeout 5m
+			write_timeout 5m
+		}
+	}
+
+	# Everything else.
+	reverse_proxy chatbot:8083
+}
