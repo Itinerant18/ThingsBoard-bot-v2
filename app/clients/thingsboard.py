@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
@@ -6,6 +7,11 @@ import httpx
 
 from app.auth.security import assert_allowed_tb_url
 from app.config import Settings
+
+# ThingsBoard page APIs return one page plus a `hasNext` cursor. Requesting a single
+# page silently truncates: BOI alone has 104 leaf devices against a 100-row page.
+# API-TB.md: "Always paginate large datasets".
+_MAX_PAGES = 50  # ponytail: 5k devices at the default page size; raise if a fleet outgrows it
 
 
 def require_uuid(value: str, label: str = "id") -> str:
@@ -15,6 +21,26 @@ def require_uuid(value: str, label: str = "id") -> str:
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError(f"{label} is not a valid UUID") from exc
     return value
+
+
+async def fetch_all_pages(
+    get: Callable[[str, dict[str, Any]], Awaitable[Any]], path: str, page_size: int
+) -> Any:
+    """Follow TB's `hasNext` cursor and return one merged page-shaped body.
+
+    The merged body keeps the last page's other fields so callers that only read
+    `data` (and any that check `hasNext`) keep working unchanged.
+    """
+    rows: list[Any] = []
+    body: Any = None
+    for page in range(_MAX_PAGES):
+        body = await get(path, {"pageSize": page_size, "page": page})
+        if not isinstance(body, dict):
+            return body if page == 0 else {"data": rows, "hasNext": False}
+        rows.extend(body.get("data") or [])
+        if not body.get("hasNext"):
+            break
+    return {**body, "data": rows, "hasNext": False} if isinstance(body, dict) else {"data": rows}
 
 
 class ThingsBoardClient:
@@ -51,10 +77,10 @@ class ThingsBoardClient:
         response.raise_for_status()
         return response.json()
 
-    async def devices(self, customer_id: str, limit: int = 100) -> Any:
+    async def devices(self, customer_id: str, page_size: int = 100) -> Any:
         require_uuid(customer_id, "customer_id")
-        return await self._get(
-            f"/api/customer/{customer_id}/devices", {"pageSize": limit, "page": 0}
+        return await fetch_all_pages(
+            self._get, f"/api/customer/{customer_id}/devices", page_size
         )
 
     async def telemetry(
@@ -101,10 +127,10 @@ class UserAwareThingsBoardClient:
         response.raise_for_status()
         return response.json()
 
-    async def devices(self, customer_id: str, limit: int = 100) -> Any:
+    async def devices(self, customer_id: str, page_size: int = 100) -> Any:
         require_uuid(customer_id, "customer_id")
-        return await self._get(
-            f"/api/customer/{customer_id}/devices", {"pageSize": limit, "page": 0}
+        return await fetch_all_pages(
+            self._get, f"/api/customer/{customer_id}/devices", page_size
         )
 
     async def telemetry(
