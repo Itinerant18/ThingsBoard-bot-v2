@@ -168,25 +168,37 @@ async def test_no_token_means_no_call() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_tier_is_read_from_the_account_name() -> None:
-    tiers = {u.email: u.tier for u in USERS}
-    assert tiers["headoffice.security@boi"] == "HO"
-    assert tiers["nb.east@boi"] == "FGMO"
-    assert tiers["howrah.security@boi"] == "ZO"
+def test_level_token_is_read_from_the_account_name() -> None:
+    levels = {u.email: (u.level, u.band) for u in USERS}
+    assert levels["headoffice.security@boi"] == ("HO", "HO")
+    assert levels["nb.east@boi"] == ("NBG", "REGION")
+    assert levels["howrah.security@boi"] == ("ZO", "ZONE")
+
+
+def test_area_excludes_the_level_word_and_the_bank_word() -> None:
+    areas = {u.email: u.area for u in USERS}
+    assert areas["howrah.security@boi"] == "Howrah"
+    assert areas["nb.east@boi"] == "East"
+    # "Head Office" / "BOI" carries no area — taking lastName blindly gave "BOI".
+    assert areas["headoffice.security@boi"] is None
 
 
 def test_total_and_breakdown() -> None:
     reply = answer("How many total users are currently registered in the system?")
     assert reply.startswith("6 users are registered in your customer account")
-    assert "Head Office 1" in reply and "FGMO/NBG 2" in reply and "ZO 3" in reply
+    # The bank's OWN vocabulary, seniority first — BOI says NBG, not FGMO.
+    assert "HO 1, NBG 2, ZO 3" in reply
     assert "5 are active" in reply
 
 
-def test_tier_counts() -> None:
+def test_level_counts_use_the_banks_own_token() -> None:
     assert answer("How many ZO users are currently in the system?").startswith("3 ZO user")
-    assert answer("How many FGMO users are currently in the system?").startswith(
-        "2 FGMO/NBG user"
-    )
+
+
+def test_a_question_in_another_banks_vocabulary_still_resolves() -> None:
+    """This customer has no account spelled FGMO; its regional accounts say NBG.
+    The question's word must find them anyway, and the answer names what they are."""
+    assert answer("How many FGMO users are currently in the system?").startswith("2 NBG user")
 
 
 def test_never_logged_in() -> None:
@@ -267,3 +279,82 @@ async def test_user_questions_route_to_the_directory(question: str) -> None:
 )
 async def test_non_user_questions_are_untouched(question: str, expected: str) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+# --------------------------------------------------------------------------- #
+# Other head offices
+#
+# Every bank on the tenant spells its levels differently. Names below are the real
+# firstName/lastName shapes from production accounts.
+# --------------------------------------------------------------------------- #
+
+
+def _bank(rows: list[tuple[str, str, str]]):
+    return normalize_users(
+        [_raw(email, first, last, last_login=_ms(2026, 7, 27, 5, 0)) for email, first, last in rows]
+    )
+
+
+BOB = _bank([
+    ("ho@bob", "HO", "BOB"),
+    ("zo.kolkata@bob", "ZO", "Kolkata"),
+    ("ro.gkol@bob", "RO", "GKOL"),
+    ("ro.kmr@bob", "RO", "KMR"),
+])
+CANARA = _bank([
+    ("ho@canara", "ho", "cb"),
+    ("co.kolkata@canara", "CO", "Kolkata"),
+])
+SBI = _bank([
+    ("sbi.parihar@sbi", "SBI Parihar", ""),
+    ("sbi.kamtaul@sbi", "SBI Kamtaul", ""),
+])
+
+
+def test_bank_of_baroda_levels_are_read_as_ho_zo_and_ro() -> None:
+    levels = {u.email: (u.level, u.band) for u in BOB}
+    assert levels["ho@bob"] == ("HO", "HO")
+    assert levels["zo.kolkata@bob"] == ("ZO", "ZONE")
+    assert levels["ro.gkol@bob"] == ("RO", "ZONE")
+
+
+def test_an_ro_question_does_not_sweep_in_zo_accounts() -> None:
+    """Bank of Baroda has both. Collapsing them onto one band would over-count."""
+    text, _ = format_user_answer(BOB, "how many RO users are there?", "your customer", now=NOW)
+    assert text.startswith("2 RO user")
+    text, _ = format_user_answer(BOB, "how many ZO users are there?", "your customer", now=NOW)
+    assert text.startswith("1 ZO user")
+
+
+def test_canara_circle_office_is_a_regional_account_not_an_unclassified_one() -> None:
+    levels = {u.email: (u.level, u.band) for u in CANARA}
+    assert levels["co.kolkata@canara"] == ("CO", "REGION")
+    assert levels["ho@canara"] == ("HO", "HO")
+
+
+def test_a_canara_question_using_boi_vocabulary_still_resolves() -> None:
+    text, _ = format_user_answer(CANARA, "how many FGMO users?", "your customer", now=NOW)
+    assert text.startswith("1 CO user")
+
+
+def test_sbi_accounts_with_no_level_word_are_branch_accounts() -> None:
+    """"SBI Parihar" carries no level token at all — it is a branch login."""
+    levels = {u.email: (u.level, u.band) for u in SBI}
+    assert levels["sbi.parihar@sbi"] == (None, "BRANCH")
+    assert {u.area for u in SBI} == {"Parihar", "Kamtaul"}
+
+
+def test_a_bank_with_only_branch_accounts_still_answers_a_total() -> None:
+    text, _ = format_user_answer(SBI, "how many users are registered?", "your customer", now=NOW)
+    assert text.startswith("2 users are registered")
+    assert "branch 2" in text
+
+
+def test_lowercase_level_tokens_are_recognised() -> None:
+    assert CANARA[0].level == "HO"  # firstName was "ho", lastName "cb"
+
+
+def test_head_office_is_not_read_as_a_bare_ho_plus_a_stray_word() -> None:
+    users = _bank([("x@boi", "Head Office", "BOI")])
+    assert users[0].level == "HO"
+    assert users[0].area is None

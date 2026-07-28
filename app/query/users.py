@@ -7,8 +7,12 @@ returns every bank's staff, so the SCOPE decision — not the formatting — is 
 of this module that matters. It is made once, in resolve_directory(), from
 /api/auth/user rather than from anything in the question.
 
-Tier (HO / FGMO / ZO) is read from the account's firstName, which the fleet sets to
-"Head Office", "BOI NBG" or "BOI ZO". It is a label for grouping answers, never a
+An account's LEVEL is read from its name, and every bank on the tenant spells that
+differently — BOI writes "BOI ZO Howrah", Bank of Baroda "RO GKOL", Canara "CO
+Kolkata", and SBI's branch logins carry no level word at all. So the token is kept as
+the bank wrote it and quoted back in answers, while a coarse band (head office /
+regional / zonal / branch) orders them and lets a question asked in one bank's
+vocabulary find another's level. It is a label for grouping answers, never a
 permission: nothing here grants access based on it.
 """
 
@@ -22,18 +26,60 @@ from typing import Any
 # Same display timezone as the alarm answers — one definition, so the two never drift.
 from app.query.alarm_answers import IST
 
+# Seniority bands. Each bank spells its levels differently — measured across the
+# tenant's real accounts:
+#
+#   BOI     "BOI NBG East",  "BOI ZO Howrah",  "Head Office BOI"
+#   BOB     "HO BOB",        "ZO Kolkata",     "RO GKOL"
+#   CANARA  "CO Kolkata",    "ho cb"
+#   SBI     "SBI Parihar"    (no level word at all — a branch account)
+#
+# The TOKEN is what a user is called and is what answers quote back; the BAND only
+# orders them and lets one bank's word find another's level when a question uses a
+# vocabulary this customer does not ("how many FGMO users" over a fleet that says NBG).
 HO = "HO"
-FGMO = "FGMO"
-ZO = "ZO"
-OTHER = "OTHER"
+REGION = "REGION"
+ZONE = "ZONE"
+BRANCH = "BRANCH"
 
-_TIER_ORDER = (HO, FGMO, ZO, OTHER)
-_TIER_LABEL = {
+_BAND_ORDER = (HO, REGION, ZONE, BRANCH)
+_BAND_LABEL = {
     HO: "Head Office",
-    FGMO: "FGMO/NBG",
-    ZO: "ZO",
-    OTHER: "other",
+    REGION: "regional",
+    ZONE: "zonal",
+    BRANCH: "branch",
 }
+
+# Level token -> band. Keys are matched as whole words against the account name.
+_LEVEL_BANDS: dict[str, str] = {
+    "HEAD OFFICE": HO,
+    "HEADOFFICE": HO,
+    "HO": HO,
+    "CO": REGION,
+    "LHO": REGION,
+    "NBG": REGION,
+    "FGMO": REGION,
+    "ZO": ZONE,
+    "RO": ZONE,
+    "RBO": ZONE,
+}
+
+# What a QUESTION's level word means, when the customer has no token spelled that way.
+_QUESTION_BANDS: tuple[tuple[str, str], ...] = (
+    ("head office", HO),
+    ("ho", HO),
+    ("fgmo", REGION),
+    ("nbg", REGION),
+    ("lho", REGION),
+    ("circle", REGION),
+    ("region", REGION),
+    ("zo", ZONE),
+    ("ro", ZONE),
+    ("rbo", ZONE),
+    ("zonal", ZONE),
+    ("zone", ZONE),
+    ("branch", BRANCH),
+)
 
 
 @dataclass(frozen=True)
@@ -41,8 +87,9 @@ class DirectoryUser:
     email: str
     display_name: str
     authority: str
-    tier: str
-    area: str | None  # "Howrah", "East", ... — the ZO/NBG this account covers
+    level: str | None  # the token this bank uses: "NBG", "ZO", "RO", "CO", "HO"
+    band: str  # HO / REGION / ZONE / BRANCH, for ordering and cross-bank matching
+    area: str | None  # "Howrah", "East", "GKOL" — what this account covers
     enabled: bool
     activated: bool
     created_at: datetime | None
@@ -51,6 +98,10 @@ class DirectoryUser:
     @property
     def never_logged_in(self) -> bool:
         return self.last_login is None
+
+    @property
+    def level_label(self) -> str:
+        return self.level or _BAND_LABEL[self.band]
 
 
 def _epoch(value: object) -> datetime | None:
@@ -63,15 +114,47 @@ def _epoch(value: object) -> datetime | None:
     return datetime.fromtimestamp(number / 1000, UTC)
 
 
-def _tier_of(first_name: str, email: str) -> str:
-    text = f"{first_name} {email}".lower()
-    if "head office" in text or "headoffice" in text or re.search(r"\bho\b", text):
-        return HO
-    if "nbg" in text or "fgmo" in text:
-        return FGMO
-    if re.search(r"\bzo\b", text) or ".security@" in email.lower():
-        return ZO
-    return OTHER
+def _level_of(*parts: str) -> tuple[str | None, str]:
+    """The level token an account name carries, and the band it belongs to.
+
+    Scans firstName AND lastName: banks put the level in either — BOI writes
+    "BOI ZO"/"Howrah", one BOI customer writes "BOI"/"HO". "Head Office" is checked
+    before "HO" so the two-word form is not read as the bare token plus a stray word.
+    An account with no level token is a branch account, which is what SBI's
+    "SBI Parihar" accounts are.
+    """
+    text = " ".join(part for part in parts if part).upper()
+    text = re.sub(r"[^A-Z0-9 ]+", " ", text)
+    for token, band in sorted(_LEVEL_BANDS.items(), key=lambda kv: -len(kv[0])):
+        if re.search(rf"\b{re.escape(token)}\b", text):
+            return ("HO" if band is HO else token), band
+    return None, BRANCH
+
+
+def _area_of(first: str, last: str, level: str | None) -> str | None:
+    """What the account covers, once its level word is removed.
+
+    "BOI ZO"/"Howrah" -> Howrah, "RO"/"GKOL" -> GKOL, "SBI Parihar"/"" -> Parihar.
+    Taking lastName blindly gave "BOB" for an account named "HO"/"BOB".
+    """
+    if level is None:
+        # Branch account: the name itself is the area, minus the bank word.
+        joined = " ".join(part for part in (first, last) if part)
+        stripped = re.sub(r"^\s*(?:sbi|boi|bob|canara|pnb|cb)\b", "", joined, flags=re.I)
+        return stripped.strip() or None
+    candidates = [part for part in (last, first) if part]
+    for candidate in candidates:
+        cleaned = re.sub(
+            rf"\b(?:{'|'.join(re.escape(k) for k in _LEVEL_BANDS)})\b",
+            " ",
+            candidate,
+            flags=re.I,
+        )
+        cleaned = re.sub(r"\b(?:sbi|boi|bob|canara|pnb|cb)\b", " ", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned:
+            return cleaned
+    return None
 
 
 def normalize_user(raw: Mapping[str, Any]) -> DirectoryUser | None:
@@ -82,16 +165,14 @@ def normalize_user(raw: Mapping[str, Any]) -> DirectoryUser | None:
     info = info if isinstance(info, Mapping) else {}
     first = str(raw.get("firstName") or "").strip()
     last = str(raw.get("lastName") or "").strip()
-    tier = _tier_of(first, email)
-    # For a "BOI ZO" / "Howrah" pair the area is the lastName; for "Head Office" / "BOI"
-    # it is the firstName that carries the role, so there is no area.
-    area = last or None if tier in (FGMO, ZO) else None
+    level, band = _level_of(first, last)
     return DirectoryUser(
         email=email,
         display_name=" ".join(part for part in (first, last) if part) or email,
         authority=str(raw.get("authority") or "UNKNOWN"),
-        tier=tier,
-        area=area,
+        level=level,
+        band=band,
+        area=_area_of(first, last, level),
         enabled=info.get("userCredentialsEnabled") is not False,
         activated=info.get("userActivated") is not False,
         created_at=_epoch(raw.get("createdTime")),
@@ -106,7 +187,18 @@ def normalize_users(rows: Sequence[Any]) -> list[DirectoryUser]:
             user = normalize_user(raw)
             if user is not None:
                 out.append(user)
-    return sorted(out, key=lambda u: (_TIER_ORDER.index(u.tier), u.display_name.lower()))
+    return sorted(out, key=lambda u: (_BAND_ORDER.index(u.band), u.display_name.lower()))
+
+
+def _asked_level(text: str) -> tuple[str, str] | None:
+    """The level word a question uses, and the band it means. Longest match wins so
+    "head office" is not read as the bare "ho"."""
+    for word, band in sorted(_QUESTION_BANDS, key=lambda kv: -len(kv[0])):
+        # Word-bounded: a bare "ro" otherwise matches inside "from", and any
+        # question containing that word gets answered as a level question.
+        if re.search(r"\b" + re.escape(word) + r"\b", text):
+            return word, band
+    return None
 
 
 def _time_text(value: datetime) -> str:
@@ -150,7 +242,8 @@ def format_user_answer(
                 "email": u.email,
                 "name": u.display_name,
                 "authority": u.authority,
-                "tier": u.tier,
+                "level": u.level,
+                "band": u.band,
                 "area": u.area,
                 "enabled": u.enabled,
                 "activated": u.activated,
@@ -163,7 +256,15 @@ def format_user_answer(
     if not users:
         return f"No users are visible in {scope_label}.", structured
 
-    by_tier = Counter(u.tier for u in users)
+    # Group by the token this bank actually uses, so an answer says "NBG 5" to BOI
+    # and "RO 3" to Bank of Baroda rather than imposing one bank's vocabulary.
+    by_level = Counter(u.level_label for u in users)
+    # Seniority order, not frequency: a reader expects the head office first.
+    _rank = {u.level_label: _BAND_ORDER.index(u.band) for u in users}
+    level_breakdown = ", ".join(
+        f"{label} {count}"
+        for label, count in sorted(by_level.items(), key=lambda kv: (_rank[kv[0]], kv[0]))
+    )
     disabled = [u for u in users if not u.enabled or not u.activated]
     never = [u for u in users if u.never_logged_in]
 
@@ -199,7 +300,7 @@ def format_user_answer(
     if "most recently" in text or "logged in recently" in text or "recent login" in text:
         pool = [u for u in users if u.last_login]
         if "zo " in text or " zo" in text:
-            pool = [u for u in pool if u.tier == ZO]
+            pool = [u for u in pool if u.band == ZONE]
         if not pool:
             return f"No login history is recorded for {scope_label}.", structured
         latest = max(pool, key=lambda u: u.last_login or current)
@@ -236,7 +337,11 @@ def format_user_answer(
     if "email" in text:
         matched = _named_area(text, users)
         if not matched:
-            matched = [u for u in users if u.tier == HO] if re.search(r"\bho\b|head office", text) else []
+            matched = (
+                [u for u in users if u.band == HO]
+                if re.search(r"\bho\b|head office", text)
+                else []
+            )
         if not matched:
             return (
                 "Name the zone, region or Head Office and I will give that account's email. "
@@ -259,36 +364,38 @@ def format_user_answer(
             )
         return "Users under that area: " + _listing([_describe(u) for u in named]) + ".", structured
 
-    for tier, keywords in ((HO, ("ho ", "head office")), (FGMO, ("fgmo", "nbg")), (ZO, ("zo",))):
-        if any(re.search(rf"\b{re.escape(k.strip())}\b", text) for k in keywords):
-            rows = [u for u in users if u.tier == tier]
-            label = _TIER_LABEL[tier]
-            if "how many" in text or "count" in text:
-                return f"{len(rows)} {label} user(s) in {scope_label}.", structured
-            if not rows:
-                return f"No {label} user is visible in {scope_label}.", structured
-            return (
-                f"{label} users in {scope_label}: "
-                + _listing([_describe(u) for u in rows])
-                + ".",
-                structured,
-            )
+    asked = _asked_level(text)
+    if asked is not None:
+        word, band = asked
+        # Exact token first: Bank of Baroda has both ZO and RO accounts, so "how many
+        # ZO users" must not sweep in the RO ones. The band synonym takes over only
+        # when this bank spells the level differently from the question — which is how
+        # "how many FGMO users" answers over a fleet whose accounts all say NBG.
+        rows = [u for u in users if u.level and u.level.upper() == word.upper()]
+        label = word.upper()
+        if not rows:
+            rows = [u for u in users if u.band == band]
+            label = ", ".join(sorted({u.level_label for u in rows})) or _BAND_LABEL[band]
+        if "how many" in text or "count" in text:
+            return f"{len(rows)} {label} user(s) in {scope_label}.", structured
+        if not rows:
+            return f"No {_BAND_LABEL[band]} user is visible in {scope_label}.", structured
+        return (
+            f"{label} users in {scope_label}: "
+            + _listing([_describe(u) for u in rows])
+            + ".",
+            structured,
+        )
 
     if "how many" in text or "count" in text or "total" in text:
-        breakdown = ", ".join(
-            f"{_TIER_LABEL[tier]} {by_tier[tier]}" for tier in _TIER_ORDER if by_tier[tier]
-        )
         return (
-            f"{len(users)} users are registered in {scope_label} ({breakdown}). "
+            f"{len(users)} users are registered in {scope_label} ({level_breakdown}). "
             f"{len(users) - len(disabled)} are active.",
             structured,
         )
 
-    breakdown = ", ".join(
-        f"{_TIER_LABEL[tier]} {by_tier[tier]}" for tier in _TIER_ORDER if by_tier[tier]
-    )
     return (
-        f"{len(users)} users are registered in {scope_label} ({breakdown}): "
+        f"{len(users)} users are registered in {scope_label} ({level_breakdown}): "
         + _listing([_describe(u) for u in users])
         + ".",
         structured,
