@@ -136,6 +136,10 @@ class QueryOrchestrator:
             # subject for "and last week?" to attach to.
             if answer.structured.get("error") is None:
                 await memory.set_active_intent(ctx.redis, session_id, intent.name)
+                if intent.window is not None:
+                    await memory.set_active_window(
+                        ctx.redis, session_id, intent.window.hours, intent.window.label
+                    )
             if gate.device_id is not None:
                 await memory.set_active_branch(
                     ctx.redis, session_id, gate.device_id, gate.branch_name

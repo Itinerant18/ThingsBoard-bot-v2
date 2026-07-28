@@ -13,7 +13,7 @@ from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
 from app.normalization.flatten import expand_containers, request_keys
 from app.normalization.snapshot import BranchSnapshot
-from app.query import cctv, derived
+from app.query import cctv, derived, history
 from app.query.answer_support import (
     LADDER_KEYS,
     first_non_blank,
@@ -281,6 +281,14 @@ class MetricHandler:
         if not ctx.tenant.user_token:
             return Answer("A user token is required to read device data.")
 
+        # A question about a PERIOD is answered from device_telemetry rather than a
+        # live ThingsBoard fetch — ThingsBoard keeps no history for attributes, so our
+        # hypertable is the only place the past exists.
+        if intent.window is not None:
+            historical = await _history_answer(intent, ctx, device_id)
+            if historical is not None:
+                return historical
+
         # Intent's key profile + every answer-layer ladder key, so nothing under-imports.
         key_set = set(keys_for(intent.name)) | LADDER_KEYS
         if intent.name.startswith("cctv"):
@@ -309,6 +317,78 @@ class MetricHandler:
         raw.setdefault("device_id", device_id)
 
         return _format_metric(intent, build_snapshot(raw), device_id)
+
+
+async def _history_answer(
+    intent: ExtractedIntent, ctx: RequestContext, device_id: str
+) -> Answer | None:
+    """Answer from device_telemetry over the requested window.
+
+    Returns None when the intent has no historical series worth summarising, so the
+    caller falls through to the normal latest-value path rather than refusing.
+
+    Scope is already enforced: MetricHandler.handle() verified device_id is in the
+    caller's ThingsBoard-bounded scope before calling this.
+    """
+    window = intent.window
+    if window is None:
+        return None
+    src = [{"type": "device_telemetry", "resource": f"device:{device_id}"}]
+
+    numeric_key = history.NUMERIC_KEY_FOR_INTENT.get(intent.name)
+    if numeric_key:
+        summary = await history.numeric_summary(ctx.db, device_id, numeric_key, window.hours)
+        if summary is None:
+            return Answer(
+                f"I have no recorded {numeric_key.replace('_', ' ')} for that device over "
+                f"{window.label}.",
+                {"key": numeric_key, "window_hours": window.hours, "samples": 0},
+                src,
+            )
+        return Answer(
+            f"{numeric_key.replace('_', ' ').title()} over {window.label}: "
+            f"min {summary.minimum:g}, avg {summary.average:g}, max {summary.maximum:g} "
+            f"({summary.samples} readings, latest {summary.latest:g}).",
+            {
+                "key": summary.key,
+                "window_hours": window.hours,
+                "samples": summary.samples,
+                "min": summary.minimum,
+                "avg": summary.average,
+                "max": summary.maximum,
+                "latest": summary.latest,
+            },
+            src,
+        )
+
+    status_key = history.STATUS_KEY_FOR_INTENT.get(intent.name)
+    if status_key:
+        status = await history.status_summary(ctx.db, device_id, status_key, window.hours)
+        if status is None:
+            return Answer(
+                f"I have no recorded {status_key} history for that device over {window.label}.",
+                {"key": status_key, "window_hours": window.hours, "samples": 0},
+                src,
+            )
+        # distinct==1 means it never changed, which is the useful answer for a status.
+        changed = (
+            "it did not change"
+            if status.distinct_values <= 1
+            else f"it took {status.distinct_values} different values"
+        )
+        return Answer(
+            f"Over {window.label} there were {status.samples} readings of {status_key} and "
+            f"{changed}. Latest: {status.latest}.",
+            {
+                "key": status.key,
+                "window_hours": window.hours,
+                "samples": status.samples,
+                "distinct_values": status.distinct_values,
+                "latest": status.latest,
+            },
+            src,
+        )
+    return None
 
 
 def _source(device_id: str) -> list[dict[str, str]]:

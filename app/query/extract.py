@@ -2,6 +2,7 @@ import re
 from typing import TYPE_CHECKING
 
 from app.query.contracts import ExtractedIntent
+from app.query.timeframe import TimeWindow, parse_window
 
 if TYPE_CHECKING:
     from app.query.memory import ChatContext
@@ -70,12 +71,25 @@ class KeywordIntentExtractor:
         # "what about Howrah"). Without the previous intent it falls through to the
         # global_overview default at the bottom of this chain and answers a question
         # nobody asked — the single most visible way the bot "forgets".
+        # A window named in THIS question always wins; otherwise a fragment keeps
+        # the period from the previous turn ("...last week" then "and Howrah?").
+        window = parse_window(question)
+        inherited = (
+            TimeWindow(context.window_hours, context.window_label or "that period")
+            if window is None
+            and context is not None
+            and context.window_hours
+            and _is_fragment(text)
+            else None
+        )
+
         if context is not None and context.intent and _is_fragment(text):
             return ExtractedIntent(
                 name=context.intent,
                 device_id=None,  # the orchestrator supplies the remembered device
                 subsystem=_detect_subsystem(text) or None,
                 raw_question=question,
+                window=window or inherited,
             )
 
         def has(*words: str) -> bool:
@@ -163,4 +177,5 @@ class KeywordIntentExtractor:
             device_id=device.group(1) if device else None,
             subsystem=_detect_subsystem(text),
             raw_question=question,
+            window=window,
         )
