@@ -1,5 +1,6 @@
 import React from 'react'
 import { ChatMessage } from '../types'
+import botLogoUrl from '../assets/icons8-chatbot-96.apng.png'
 
 const renderFormattedText = (text: string) => {
   if (!text) return null
@@ -117,12 +118,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onSuggest
   return (
     <div className={`flex gap-2 sm:gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'} message-enter items-start w-full max-w-[97%] sm:max-w-[88%] ${isUser ? 'ml-auto' : 'mr-auto'}`}>
       {/* Avatar */}
-      <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center flex-shrink-0 shadow-sm ${
+      <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center flex-shrink-0 shadow-sm overflow-hidden ${
         isUser 
           ? 'bg-[#1E293B] text-white font-bold text-xs border border-slate-700' 
           : 'bg-gradient-to-br from-blue-600 to-blue-700 text-white font-bold text-xs border border-blue-500/30'
       }`}>
-        {isUser ? 'U' : '🤖'}
+        {isUser ? 'U' : <img src={botLogoUrl} alt="Bot" className="w-5 h-5 sm:w-6 sm:h-6 object-contain" />}
       </div>
 
       {/* Bubble */}

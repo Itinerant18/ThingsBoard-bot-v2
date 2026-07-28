@@ -28,8 +28,11 @@ export const ChatWindow: React.FC = () => {
     if (last?.role === 'user') {
       stickToBottom.current = true
     }
-    if (stickToBottom.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (stickToBottom.current && scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      })
     }
   }, [messages, isLoading])
 
@@ -41,7 +44,7 @@ export const ChatWindow: React.FC = () => {
       <div className="brushed-metal-header px-3 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between flex-shrink-0 z-10">
         <div className="flex items-center gap-2.5 sm:gap-3">
           {/* Vibrant blue logo badge */}
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-blue-600 to-blue-700 border border-blue-400/30 shadow-sm">
+          <div className="hidden sm:flex w-8 h-8 sm:w-9 sm:h-9 rounded-lg items-center justify-center flex-shrink-0 bg-gradient-to-br from-blue-600 to-blue-700 border border-blue-400/30 shadow-sm">
             <svg className="w-4 h-4 sm:w-5 sm:h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
               <rect x="3" y="14" width="4" height="6" rx="1" />
               <rect x="10" y="8" width="4" height="12" rx="1" />
@@ -49,7 +52,7 @@ export const ChatWindow: React.FC = () => {
             </svg>
           </div>
 
-          <div>
+          <div className="hidden sm:block">
             <div className="font-bold text-xs sm:text-sm text-white tracking-wide leading-tight">SAI</div>
           </div>
         </div>

@@ -123,12 +123,9 @@ export const ChatInput: React.FC = () => {
             <button
               onClick={handleSend}
               disabled={!input.trim() || isLoading}
-              className="brass-button w-10 h-10 flex items-center justify-center flex-shrink-0"
+              className="brass-button w-10 h-10 flex items-center justify-center flex-shrink-0 text-white"
             >
-              <svg className="w-4 h-4 transform rotate-45 -translate-x-0.5 translate-y-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
+              <i className="fa-solid fa-arrow-up"></i>
             </button>
           )}
         </div>

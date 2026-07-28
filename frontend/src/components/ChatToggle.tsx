@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { ChatWindow } from './ChatWindow'
-import { BotLogoSvg } from './BotLogoSvg'
+import botLogoUrl from '../assets/icons8-chatbot-96.apng.png'
 
 export const ChatToggle: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false)
@@ -28,9 +28,9 @@ export const ChatToggle: React.FC = () => {
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
         ) : (
-          <div className="logo-toggle-container">
+          <div className="logo-toggle-container flex items-center justify-center w-full h-full bg-gradient-to-br from-blue-600 to-blue-700 rounded-full">
             <div className="logo-toggle-glow" />
-            <BotLogoSvg className="w-[54px] h-[54px] logo-toggle-img" />
+            <img src={botLogoUrl} alt="Bot" className="w-[34px] h-[34px] object-contain z-10" />
           </div>
         )}
       </button>
