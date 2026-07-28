@@ -295,6 +295,21 @@ def test_zone_with_unresolved_alarms() -> None:
     assert "ZO HOWRAH" in reply and "NBG EAST" in reply
 
 
+def test_open_and_resolved_words_do_not_collide_as_substrings() -> None:
+    """Both directions of the collision, since each answers with the opposite set.
+
+    "unresolved" contains "resolved"; "currently resolved" contains "current".
+    """
+    unresolved = answer("Are there any active unresolved alarms?")
+    assert "open for" in unresolved and "TAT" not in unresolved
+
+    currently_resolved = answer("How many alarms are currently resolved?")
+    assert "TAT" in currently_resolved and "no end time" not in currently_resolved
+
+    # A time adverb alone still means open.
+    assert "no end time" in answer("What alarms are open currently?")
+
+
 def test_no_active_critical_alarms_names_the_highest_severity() -> None:
     reply = answer("Are there any active critical alarms?")
     assert reply.startswith("No active Critical alarms are visible.")

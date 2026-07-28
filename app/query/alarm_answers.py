@@ -1,5 +1,6 @@
 """Normalize ThingsBoard alarms and format the alarm FAQ question families."""
 
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -204,11 +205,33 @@ def _structured(alarms: list[AlarmRecord]) -> list[dict[str, Any]]:
     return result
 
 
-_OPEN_WORDS = ("active", "current", "currently", "right now", "unresolved", "open")
+# Word-bounded on purpose. Substring matching collides in both directions here:
+# "unresolved" contains "resolved", and "currently resolved" contains "current".
+# Either collision answers with the opposite set of alarms.
+_OPEN_RE = re.compile(r"\b(?:unresolved|active|open|current(?:ly)?|right now|ongoing)\b")
+_RESOLVED_RE = re.compile(r"\b(?:resolved|cleared)\b")
+_UNRESOLVED_RE = re.compile(r"\bunresolved\b")
 
 
 def _asks_for_open(text: str) -> bool:
-    return any(word in text for word in _OPEN_WORDS)
+    """True when the question is about alarms that are still open.
+
+    Precedence, and the reason it is not a plain word scan: "unresolved" settles the
+    question outright. Otherwise naming a resolved state wins over a bare time adverb,
+    so "how many alarms are currently resolved?" is a history question that happens to
+    say "currently" — not a request for the open list.
+    """
+    if _UNRESOLVED_RE.search(text):
+        return True
+    if _RESOLVED_RE.search(text):
+        return False
+    return bool(_OPEN_RE.search(text))
+
+
+def _asks_for_resolved(text: str) -> bool:
+    return not _asks_for_open(text) and (
+        bool(_RESOLVED_RE.search(text)) or "completed tat" in text
+    )
 
 
 def format_alarm_answer(
@@ -227,11 +250,8 @@ def format_alarm_answer(
     elif "last 24" in text:
         selected = [alarm for alarm in alarms if alarm.created_at >= current - timedelta(hours=24)]
     elif _asks_for_open(text):
-        # Checked BEFORE the resolved branch: "unresolved" contains "resolved", so
-        # "any active unresolved alarms?" otherwise answered with the resolved list —
-        # the precise opposite of the question.
         selected = active
-    elif "resolved" in text or "completed tat" in text:
+    elif _asks_for_resolved(text):
         selected = resolved
     else:
         selected = alarms
