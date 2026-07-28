@@ -330,8 +330,22 @@ minutes per device over a 365-day window, so the full fleet is hours of work and
 several GB — pick the window deliberately.
 
 ```bash
+# FULL FLEET, 365 days — the canonical run. Hours long, so it must be DETACHED:
+# a plain `docker exec` dies with your SSH session.
+docker exec -d chatbot-v2 sh -c   'python -m scripts.backfill_telemetry --days 365 > /tmp/backfill.log 2>&1'
+
+# progress / result
+docker exec chatbot-v2 sh -c 'grep -c " -> " /tmp/backfill.log'      # devices done
+docker exec chatbot-v2 sh -c 'tail -5 /tmp/backfill.log'
+docker exec chatbot-v2 sh -c 'grep "backfill complete" /tmp/backfill.log'
+
+# narrower runs
 docker exec chatbot-v2 python -m scripts.backfill_telemetry --days 30
 docker exec chatbot-v2 python -m scripts.backfill_telemetry --days 365 --device <uuid>
 ```
 
-Idempotent: ON CONFLICT DO NOTHING on `(device_id, key, time)`, so re-runs are safe.
+**Do not deploy while a backfill is running.** CI recreates the container on every
+push to `main`, which kills the job — restart it afterwards.
+
+Idempotent: ON CONFLICT DO NOTHING on `(device_id, key, time)`, so re-runs are safe
+and a killed run can simply be started again.
