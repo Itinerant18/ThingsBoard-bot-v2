@@ -1,3 +1,5 @@
+import pytest
+
 from app.llm.intent import LlmIntentExtractor
 from app.query.extract import KeywordIntentExtractor
 
@@ -83,3 +85,31 @@ async def test_blank_question_skips_llm() -> None:
     result = await extractor.extract("   ")
     assert stub.called is False
     assert result.name == "global_overview"  # keyword default
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is the system current of liluah",
+        "show me the current draw",
+        "system current status",
+    ],
+)
+async def test_amperage_questions_reach_the_current_metric(question: str) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == "system_current"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is the current overall system compliance score?",
+        "which zone currently has the worst SLA compliance?",
+        "show me all users currently under the MP zone",
+        "what is the most frequent error type currently occurring?",
+    ],
+)
+async def test_current_the_adjective_is_not_an_ammeter_reading(question: str) -> None:
+    """Matching the bare word "current" sent a fifth of the operator FAQ into the
+    amperage handler. Answering a compliance question with an ammeter reading is a
+    confident wrong answer, which is worse than admitting the question is unmapped."""
+    assert (await KeywordIntentExtractor().extract(question)).name != "system_current"

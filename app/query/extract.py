@@ -40,6 +40,17 @@ def _is_fragment(text: str) -> bool:
     return any(marker in stripped for marker in _FOLLOW_UP_MARKERS) or len(stripped.split()) <= 4
 
 
+# "current" is overwhelmingly the adjective ("current status", "currently active"),
+# not the amperage reading. Matching the bare word routed a fifth of every question
+# the operators ask — compliance scores, user lists, SLA — into the system_current
+# metric handler, which answered each one with an ammeter reading. A question that
+# means amps says so.
+_AMPERAGE_RE = re.compile(
+    r"\b(?:system current|current draw|load current|battery current|current reading"
+    r"|amperage|amps?|milliamps?|\d+\s*a\b)\b"
+)
+
+
 def _detect_subsystem(text: str) -> str | None:
     if "gateway" in text:
         return "gateway"
@@ -207,7 +218,7 @@ class KeywordIntentExtractor:
             intent = "battery_health"
         elif re.search(r"\bac\b", text) and "volt" in text:
             intent = "ac_voltage"
-        elif "current" in text:
+        elif _AMPERAGE_RE.search(text):
             intent = "system_current"
         elif "power" in text:
             intent = "power_status"
