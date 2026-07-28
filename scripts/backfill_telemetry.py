@@ -35,6 +35,9 @@ MAX_ATTEMPTS = 5
 # ThingsBoard rejects a query whose keys x limit implies too many points: 40 keys at
 # limit=10000 returns 400, as does limit=50000 on its own. Small batches also mean a
 # rejected batch costs one slice of one device rather than the whole device.
+# A device counts as already-backfilled only if it has rows older than this.
+HISTORY_CUTOFF_DAYS = 2
+
 KEY_BATCH = 10
 POINT_LIMIT = 2000
 
@@ -159,18 +162,30 @@ async def main() -> None:
     if args.skip_existing:
         # Resume path. A killed run (a deploy recreates the container) leaves its rows
         # in Tiger, so refetching those devices is hours of pointless ThingsBoard load.
+        #
+        # "Has history" must mean OLD rows, not any rows: live sync writes a full
+        # snapshot for every device whenever the Redis change-detection baseline is
+        # empty, which stamps all 128 devices with today's timestamp and would make a
+        # naive "device_id already present" check skip the entire fleet.
+        cutoff = datetime.now(UTC) - timedelta(days=HISTORY_CUTOFF_DAYS)
         async with sessions() as session:
             done = {
                 str(r[0])
                 for r in (
                     await session.execute(
-                        select(DeviceTelemetry.device_id).distinct()  # type: ignore[arg-type]
+                        select(DeviceTelemetry.device_id)
+                        .where(DeviceTelemetry.time < cutoff)
+                        .distinct()
                     )
                 ).all()
             }
         before = len(targets)
         targets = [(d, c) for d, c in targets if d not in done]
-        logger.info("skipping %d device(s) that already have history", before - len(targets))
+        logger.info(
+            "skipping %d device(s) with history older than %d day(s)",
+            before - len(targets),
+            HISTORY_CUTOFF_DAYS,
+        )
 
     logger.info("backfilling %d device(s), %d day(s)", len(targets), args.days)
 

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "thingsboard": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "thingsboard/mcp"
+      ],
+      "env": {
+        "THINGSBOARD_URL": "https://app.swatch360.seple.in/",
+        "THINGSBOARD_API_KEY": "tb_NKOBNFAlaWYs9qiMCON_egW5V0ylMGrdk90y-Jz-1yxoxdwZBh7MRoLHheNlcz2nbeN9azIEZUQlxMPnVFtATg"
+      }
+    }
+  }
+}
