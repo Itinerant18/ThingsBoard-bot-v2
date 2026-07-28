@@ -17,6 +17,7 @@ from app.query.handlers import (
     FleetHealth,
     GlobalOverview,
     MetricHandler,
+    UserDirectory,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class QueryOrchestrator:
             DeviceInventory(),
             FleetHealth(),
             CctvFleet(),
+            UserDirectory(),
             AlarmDetail(),
             MetricHandler(),
         ]

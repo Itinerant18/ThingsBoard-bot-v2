@@ -22,7 +22,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 
@@ -35,6 +35,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CACHE_PREFIX = "tbacl:v1:"
+_IDENTITY_PREFIX = "tbacl:v1:id:"
+
+# ThingsBoard's "no customer" sentinel. A TENANT_ADMIN carries it in customerId, and
+# requesting it as a real customer id 404s.
+_NULL_CUSTOMER = "13814000-1dd2-11b2-8080-808080808080"
 
 
 class PermissionCheckUnavailable(Exception):
@@ -90,6 +95,81 @@ def _cache_key(token: str) -> str:
     mistake, and it also meant history was lost on every token refresh.)
     """
     return _CACHE_PREFIX + hashlib.sha256(token.encode()).hexdigest()[:32]
+
+
+class CallerIdentity(NamedTuple):
+    """What ThingsBoard says the caller is. Never what the token claims to be."""
+
+    authority: str
+    customer_id: str | None
+
+    @property
+    def is_tenant_admin(self) -> bool:
+        return self.authority == "TENANT_ADMIN"
+
+
+def _identity_of(user: Any) -> CallerIdentity:
+    if not isinstance(user, dict):
+        raise PermissionCheckUnavailable("unexpected /api/auth/user response")
+    raw_customer = user.get("customerId")
+    customer_id = raw_customer.get("id") if isinstance(raw_customer, dict) else raw_customer
+    # A TENANT_ADMIN's customerId is ThingsBoard's null-UUID sentinel, not a customer.
+    if customer_id in (None, "", _NULL_CUSTOMER):
+        customer_id = None
+    return CallerIdentity(str(user.get("authority") or ""), customer_id and str(customer_id))
+
+
+async def caller_identity(
+    settings: Settings, user_token: str, redis: "Redis"
+) -> CallerIdentity:
+    """Resolve the caller's authority and customer from ThingsBoard.
+
+    Separate from authorized_device_ids because the non-device reports (users, audit)
+    need the same verdict, and asking twice in two ways is how two answers to the same
+    security question drift apart.
+    """
+    if not user_token:
+        raise PermissionCheckUnavailable("no caller token")
+    if is_expired(user_token):
+        raise SessionExpired("token expired")
+
+    key = _IDENTITY_PREFIX + hashlib.sha256(user_token.encode()).hexdigest()[:32]
+    try:
+        cached = await redis.get(key)
+    except Exception:
+        logger.warning("[TB-ACL] identity cache read failed", exc_info=True)
+        cached = None
+    if cached:
+        raw = cached.decode() if isinstance(cached, bytes) else str(cached)
+        try:
+            data = json.loads(raw)
+            return CallerIdentity(str(data["authority"]), data["customer_id"])
+        except (ValueError, TypeError, KeyError):
+            logger.warning("[TB-ACL] discarding unreadable identity cache entry")
+
+    client = UserAwareThingsBoardClient(settings, user_token)
+    try:
+        identity = _identity_of(await client.current_user())
+    except PermissionCheckUnavailable:
+        raise
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            raise SessionExpired(f"thingsboard returned {exc.response.status_code}") from exc
+        raise PermissionCheckUnavailable(str(exc)) from exc
+    except Exception as exc:
+        raise PermissionCheckUnavailable(str(exc)) from exc
+    finally:
+        await client.close()
+
+    try:
+        await redis.set(
+            key,
+            json.dumps({"authority": identity.authority, "customer_id": identity.customer_id}),
+            ex=settings.tb_acl_cache_seconds,
+        )
+    except Exception:
+        logger.warning("[TB-ACL] identity cache write failed", exc_info=True)
+    return identity
 
 
 def _device_ids(page: Any) -> set[str]:

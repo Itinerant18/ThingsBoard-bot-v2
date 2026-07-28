@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from app.auth.scope_resolver import resolved_scope
+from app.auth.tb_acl import caller_identity
 from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
 from app.config import Settings
 from app.hierarchy.scope import ScopedBranches
@@ -25,6 +26,7 @@ from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
 from app.query.key_profiles import keys_for
+from app.query.users import format_user_answer, normalize_users
 from app.tasks.live_sync import load_fleet_states
 
 logger = logging.getLogger(__name__)
@@ -243,6 +245,63 @@ class CctvFleet:
             format_cctv_fleet(fleet, intent.raw_question),
             {"cctv_fleet": fleet.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+
+
+class UserDirectory:
+    """Who is registered, under the caller's OWN customer only.
+
+    SECURITY: the customer id comes from ThingsBoard's answer to "who is this token",
+    never from the question and never from the local hierarchy. The tenant-wide user
+    endpoint returns every bank's staff in one page, so a customer-scoped caller must
+    never reach it — this handler is the only place that decision is made.
+    """
+
+    intent = "user_directory"
+
+    def __init__(
+        self,
+        identity_fn: Callable[[RequestContext], Awaitable[Any]] | None = None,
+        client_factory: Callable[[Settings, str], Any] = UserAwareThingsBoardClient,
+    ) -> None:
+        self._identity_fn = identity_fn or self._default_identity
+        self._client_factory = client_factory
+
+    @staticmethod
+    async def _default_identity(ctx: RequestContext) -> Any:
+        return await caller_identity(ctx.tb.settings, ctx.tenant.user_token or "", ctx.redis)
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        if not ctx.tenant.user_token:
+            return Answer("A user token is required to read the user directory.")
+        identity = await self._identity_fn(ctx)
+
+        client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
+        try:
+            if identity.is_tenant_admin:
+                body = await client.tenant_users()
+                scope_label = "this ThingsBoard tenant"
+            elif identity.customer_id:
+                body = await client.customer_users(identity.customer_id)
+                scope_label = "your customer account"
+            else:
+                # Authenticated but assigned to no customer: authorized for no directory.
+                return Answer(
+                    "Your ThingsBoard account is not assigned to a customer, so there is "
+                    "no user directory I can show you.",
+                    {"scope": "none", "users": []},
+                )
+        finally:
+            await client.close()
+
+        rows = body.get("data", []) if isinstance(body, dict) else body
+        users = normalize_users(rows if isinstance(rows, list) else [])
+        text, structured = format_user_answer(users, intent.raw_question, scope_label)
+        return Answer(
+            text, structured, [{"type": "thingsboard-users", "resource": scope_label}]
         )
 
 

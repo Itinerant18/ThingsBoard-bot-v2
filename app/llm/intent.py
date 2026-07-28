@@ -22,6 +22,7 @@ ALLOWED_INTENTS = (
     "global_overview",
     "fleet_health",
     "cctv_fleet",
+    "user_directory",
     "device_inventory",
     "alarm_detail",
     "subsystem_status",

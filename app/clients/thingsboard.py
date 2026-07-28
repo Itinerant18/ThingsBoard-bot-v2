@@ -214,6 +214,26 @@ class UserAwareThingsBoardClient:
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/{scope}"
         )
 
+    async def customer_users(self, customer_id: str, page_size: int = 100) -> Any:
+        """Users assigned to ONE customer.
+
+        Deliberately the only user listing a customer-scoped caller ever reaches. The
+        tenant-wide endpoint returns every bank's users in a single page — verified
+        against production, where one call returned Canara Bank and Bank of India
+        accounts together — so routing a branch user through it would enumerate other
+        banks' staff. ThingsBoard also rejects a cross-customer id with 403, but the
+        id here comes from /api/auth/user, never from the question.
+        """
+        require_uuid(customer_id, "customer_id")
+        return await fetch_all_pages(
+            self._get, f"/api/customer/{customer_id}/users", page_size
+        )
+
+    async def tenant_users(self, page_size: int = 100) -> Any:
+        """Every user in the tenant. ThingsBoard returns 403 unless the CALLER really
+        is a tenant admin, which is what makes it safe to call on their behalf."""
+        return await fetch_all_pages(self._get, "/api/tenant/users", page_size)
+
     async def alarms(self, device_id: str, page_size: int = 100) -> Any:
         """Alarm history constrained by both TB ACL and the requested device."""
         require_uuid(device_id, "device_id")

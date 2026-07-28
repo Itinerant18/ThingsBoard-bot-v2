@@ -69,6 +69,20 @@ def _detect_subsystem(text: str) -> str | None:
     return None
 
 
+_USER_RE = re.compile(r"\buser|\blogin|\blogged in|\baccount(s)?\b|\brole(s)?\b|\bpermission")
+# "device user" is not a person, and a role question about MODULES is a config question.
+_NOT_USER_RE = re.compile(r"\bdevice user|\buser device|\bend[- ]user device")
+
+
+def _is_user_question(text: str) -> bool:
+    if _NOT_USER_RE.search(text) or not _USER_RE.search(text):
+        return False
+    # "roles"/"permissions" alone are ambiguous; require a person-shaped subject.
+    if re.search(r"\buser|\blogin|\blogged in|\baccount", text):
+        return True
+    return bool(re.search(r"\brole|\bpermission|\badmin access", text))
+
+
 # Fleet-shaped CCTV questions. The cctv_* intents all resolve one branch's NVR, so a
 # question spanning branches routed there answered for a single device or refused for
 # want of a device_id.
@@ -203,6 +217,8 @@ class KeywordIntentExtractor:
             or ("issue" in text and cctv)
         ):
             intent = "alarm_detail"
+        elif _is_user_question(text):
+            intent = "user_directory"
         elif _is_fleet_cctv_question(text, cctv):
             intent = "cctv_fleet"
         elif _is_fleet_health_question(text):
