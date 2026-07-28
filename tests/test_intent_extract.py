@@ -34,6 +34,14 @@ async def test_valid_llm_json() -> None:
     assert result.subsystem is None
 
 
+async def test_fleet_health_is_an_allowed_llm_intent() -> None:
+    result = await _extractor(
+        '{"intent": "fleet_health", "device_id": null, "subsystem": "timeLock"}'
+    ).extract("How many TLS devices are offline?")
+    assert result.name == "fleet_health"
+    assert result.subsystem == "timeLock"
+
+
 async def test_fenced_json_is_tolerated() -> None:
     result = await _extractor(
         '```json\n{"intent": "subsystem_status", "device_id": "d9", "subsystem": "cctv"}\n```'

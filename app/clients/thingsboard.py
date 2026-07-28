@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # have vanished with no error. (BOI's 104 hierarchy leaves span five TB customers;
 # they are not one customer's device list.)
 _MAX_PAGES = 50  # ponytail: 5k devices at the default page size; raise if a fleet outgrows it
+_MAX_ALARM_PAGES = 5  # 500 alarms/device bounds a fleet-wide history request
 
 
 def require_uuid(value: str, label: str = "id") -> str:
@@ -32,7 +33,10 @@ def require_uuid(value: str, label: str = "id") -> str:
 
 
 async def fetch_all_pages(
-    get: Callable[[str, dict[str, Any]], Awaitable[Any]], path: str, page_size: int
+    get: Callable[[str, dict[str, Any]], Awaitable[Any]],
+    path: str,
+    page_size: int,
+    max_pages: int = _MAX_PAGES,
 ) -> Any:
     """Follow TB's `hasNext` cursor and return one merged page-shaped body.
 
@@ -41,7 +45,7 @@ async def fetch_all_pages(
     """
     rows: list[Any] = []
     body: Any = None
-    for page in range(_MAX_PAGES):
+    for page in range(max_pages):
         body = await get(path, {"pageSize": page_size, "page": page})
         if not isinstance(body, dict):
             return body if page == 0 else {"data": rows, "hasNext": False}
@@ -52,7 +56,7 @@ async def fetch_all_pages(
         # Exhausting the cap means the result IS truncated — say so rather than
         # handing back a short list wearing hasNext=False, which is the exact
         # silent-drop this function exists to remove.
-        logger.warning("[TB] %s hit the %d-page cap; result is truncated", path, _MAX_PAGES)
+        logger.warning("[TB] %s hit the %d-page cap; result is truncated", path, max_pages)
     return {**body, "data": rows, "hasNext": False} if isinstance(body, dict) else {"data": rows}
 
 
@@ -117,6 +121,28 @@ class ThingsBoardClient:
         require_uuid(device_id, "device_id")
         return await self._get(
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/{scope}"
+        )
+
+    async def alarms(self, device_id: str, page_size: int = 100) -> Any:
+        """Alarm history for one device, including active and cleared alarms."""
+        require_uuid(device_id, "device_id")
+
+        async def get(path: str, params: dict[str, Any]) -> Any:
+            return await self._get(
+                path,
+                {
+                    **params,
+                    "searchStatus": "ANY",
+                    "sortProperty": "createdTime",
+                    "sortOrder": "DESC",
+                },
+            )
+
+        return await fetch_all_pages(
+            get,
+            f"/api/alarms/DEVICE/{device_id}",
+            page_size,
+            max_pages=_MAX_ALARM_PAGES,
         )
 
 
@@ -186,4 +212,26 @@ class UserAwareThingsBoardClient:
         require_uuid(device_id, "device_id")
         return await self._get(
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/{scope}"
+        )
+
+    async def alarms(self, device_id: str, page_size: int = 100) -> Any:
+        """Alarm history constrained by both TB ACL and the requested device."""
+        require_uuid(device_id, "device_id")
+
+        async def get(path: str, params: dict[str, Any]) -> Any:
+            return await self._get(
+                path,
+                {
+                    **params,
+                    "searchStatus": "ANY",
+                    "sortProperty": "createdTime",
+                    "sortOrder": "DESC",
+                },
+            )
+
+        return await fetch_all_pages(
+            get,
+            f"/api/alarms/DEVICE/{device_id}",
+            page_size,
+            max_pages=_MAX_ALARM_PAGES,
         )

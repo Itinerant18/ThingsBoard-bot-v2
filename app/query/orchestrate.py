@@ -10,7 +10,13 @@ from app.query import memory
 from app.query.branch_names import BranchGateResult, gate_and_resolve, load_directory
 from app.query.contracts import Answer, ExtractedIntent, Handler, RequestContext
 from app.query.extract import KeywordIntentExtractor
-from app.query.handlers import AlarmDetail, DeviceInventory, GlobalOverview, MetricHandler
+from app.query.handlers import (
+    AlarmDetail,
+    DeviceInventory,
+    FleetHealth,
+    GlobalOverview,
+    MetricHandler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +64,7 @@ class QueryOrchestrator:
         self.handlers: list[Handler] = [
             GlobalOverview(),
             DeviceInventory(),
+            FleetHealth(),
             AlarmDetail(),
             MetricHandler(),
         ]

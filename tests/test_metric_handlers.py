@@ -1,5 +1,6 @@
 import json
 import uuid
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -197,6 +198,42 @@ async def test_device_inventory_lists_only_scoped_names() -> None:
     answer = await handler.handle(ExtractedIntent(name="device_inventory"), make_ctx())
     assert "BOI-A" in answer.text and "BOI-B" in answer.text
     assert "2 branch device" in answer.text
+
+
+async def test_device_inventory_answers_current_region() -> None:
+    handler = DeviceInventory(scope_fn=_scoped_fn(ScopedBranches(["BOI-A"], ["d1"])))
+    ctx = make_ctx()
+    ctx.tenant = replace(ctx.tenant, region="FGMO EAST")
+    answer = await handler.handle(
+        ExtractedIntent(name="device_inventory", raw_question="Which region is currently active?"),
+        ctx,
+    )
+    assert answer.text == "One region is active in your current scope: FGMO EAST."
+
+
+async def test_device_inventory_answers_map_markers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.query import handlers
+
+    async def fake_states(redis, customer, device_ids):
+        return {
+            "d1": {
+                "branchName": "BOI-TARAKESHWAR",
+                "lat1": "22.88",
+                "lon1": "88.01",
+                "active": "true",
+            }
+        }
+
+    monkeypatch.setattr(handlers, "load_fleet_states", fake_states)
+    handler = DeviceInventory(
+        scope_fn=_scoped_fn(ScopedBranches(["BOI-TARAKESHWAR"], ["d1"]))
+    )
+    answer = await handler.handle(
+        ExtractedIntent(name="device_inventory", raw_question="Which branch is visible on the map?"),
+        make_ctx(),
+    )
+    assert "BOI-TARAKESHWAR (ONLINE)" in answer.text
+    assert answer.structured["map_markers"][0]["latitude"] == 22.88
 
 
 async def test_metric_handler_default_reaches_branch_scope() -> None:

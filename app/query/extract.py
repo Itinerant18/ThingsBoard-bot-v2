@@ -14,7 +14,7 @@ _INTENT_WORDS = (
     "network", "operator", "sos", "door", "alarm", "alert", "subsystem", "ias",
     "fas", "bas", "time lock", "access control", "device", "branch", "inventory",
     "status", "health", "hardware", "firmware", "recording", "storage", "zone",
-    "panel", "connected", "tamper", "disconnect", "fault",
+    "panel", "connected", "tamper", "disconnect", "fault", "tls", "acs",
 )
 
 # Openers that explicitly reference the previous turn.
@@ -41,6 +41,8 @@ def _is_fragment(text: str) -> bool:
 
 
 def _detect_subsystem(text: str) -> str | None:
+    if "gateway" in text:
+        return "gateway"
     if "cctv" in text or "camera" in text:
         return "cctv"
     if "intrusion" in text or re.search(r"\bias\b", text):
@@ -49,11 +51,50 @@ def _detect_subsystem(text: str) -> str | None:
         return "fas"
     if re.search(r"\bbas\b", text):
         return "bas"
-    if "time lock" in text:
+    if "time lock" in text or re.search(r"\btls\b", text):
         return "timeLock"
-    if "access control" in text:
+    if "access control" in text or re.search(r"\bacs\b", text):
         return "accessControl"
     return None
+
+
+def _is_fleet_health_question(text: str) -> bool:
+    """Question families backed by the deployed-module health aggregation."""
+    phrases = (
+        "device category",
+        "device categories",
+        "health distribution",
+        "health percentage",
+        "health score",
+        "healthy devices",
+        "faulty devices",
+        "offline devices",
+        "monitored systems",
+        "system health",
+        "system healthy",
+        "status of our",
+        "needs attention",
+        "need attention",
+        "all devices healthy",
+    )
+    if any(phrase in text for phrase in phrases):
+        return True
+    named_category = _detect_subsystem(text) is not None
+    if named_category and "device" in text and any(
+        state in text for state in ("healthy", "faulty", "offline", "deployed")
+    ):
+        return True
+    return named_category and any(
+        phrase in text
+        for phrase in (
+            "devices deployed",
+            "system healthy",
+            "devices are healthy",
+            "devices are offline",
+            "devices are faulty",
+            "status of all",
+        )
+    )
 
 
 class KeywordIntentExtractor:
@@ -103,7 +144,15 @@ class KeywordIntentExtractor:
         #   "bas power status"       -> would hit the generic "power" branch
         #   "how many connected devices" -> would hit the generic "how many" count
         #   "bas panel state"        -> would hit the generic subsystem branch
-        if bas and has("zone"):
+        if (
+            has("alarm", "alert")
+            or ("branch" in text and "attention" in text)
+            or ("issue" in text and cctv)
+        ):
+            intent = "alarm_detail"
+        elif _is_fleet_health_question(text):
+            intent = "fleet_health"
+        elif bas and has("zone"):
             intent = "bas_zone_info"
         elif bas and has("panel", "heartbeat", "mode"):
             intent = "bas_panel_info"
@@ -132,11 +181,22 @@ class KeywordIntentExtractor:
         # list" is still a count.
         elif has("how many", "count of", "total number") and not cctv:
             intent = "global_overview"
-        elif has("inventory", "list device", "list branch", "list my", "show me the branch",
-                 "which branch", "what branch", "name the branch", "all branches"):
+        elif has(
+            "inventory",
+            "list device",
+            "list branch",
+            "list my",
+            "show me the branch",
+            "which branch",
+            "what branch",
+            "name the branch",
+            "all branches",
+            "active region",
+            "region is currently active",
+            "visible on the map",
+            "branches on the map",
+        ):
             intent = "device_inventory"
-        elif has("alarm", "alert"):
-            intent = "alarm_detail"
         elif "gateway" in text:
             intent = "gateway_status"
         elif "battery" in text and "volt" in text:

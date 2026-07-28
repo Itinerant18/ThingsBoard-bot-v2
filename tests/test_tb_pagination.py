@@ -5,12 +5,13 @@ drops real devices from /api/v1/data. API-TB.md: "Always paginate large datasets
 """
 
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
 
-from app.clients.thingsboard import fetch_all_pages
+from app.clients.thingsboard import UserAwareThingsBoardClient, fetch_all_pages
 
 _Get = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -72,3 +73,25 @@ async def test_non_dict_body_passed_through() -> None:
         return []
 
     assert await fetch_all_pages(get, "/api/customer/x/devices", 100) == []
+
+
+@pytest.mark.asyncio
+async def test_alarm_history_requests_any_status_and_paginates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = object.__new__(UserAwareThingsBoardClient)
+    seen: list[dict[str, Any]] = []
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        assert path.startswith("/api/alarms/DEVICE/")
+        assert params is not None
+        seen.append(params)
+        page = int(params["page"])
+        return {"data": [{"page": page}], "hasNext": page == 0}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    body = await client.alarms(str(uuid.uuid4()), page_size=100)
+
+    assert [row["page"] for row in body["data"]] == [0, 1]
+    assert all(params["searchStatus"] == "ANY" for params in seen)
+    assert all(params["sortProperty"] == "createdTime" for params in seen)

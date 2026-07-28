@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 # the LLM must not emit an intent that dead-ends at "could not map".
 ALLOWED_INTENTS = (
     "global_overview",
+    "fleet_health",
     "device_inventory",
     "alarm_detail",
     "subsystem_status",
@@ -39,16 +40,43 @@ ALLOWED_INTENTS = (
 )
 
 _SYSTEM_PROMPT = (
-    "You classify a facility-monitoring question into exactly one intent and "
-    "extract entities. Reply with ONLY a JSON object, no prose, no code fences.\n"
+    "You are the intent router for a live BOI facility-monitoring assistant. "
+    "Classify the user's question; never answer it and never invent current counts, "
+    "device states, alarms, branches, dates, or TAT. The deterministic query layer "
+    "will calculate the final answer from the caller's current authorized data. "
+    "Reply with ONLY one JSON object, no prose and no code fences.\n"
     'Schema: {"intent": <one of: '
     + ", ".join(ALLOWED_INTENTS)
     + '>, "device_id": <device/asset id string or null>, '
-    '"subsystem": <cctv|ias|bas|fas|timeLock|accessControl or null>}\n'
-    "Guidance: global_overview=fleet-wide health/counts; device_inventory=list devices; "
-    "alarm_detail=alarms/alerts; the *_status/*_voltage/battery_*/ac_voltage/system_current/"
-    "power_status/cctv_*/device_hardware intents are single-device metric questions and need a "
-    "device_id; subsystem_status=state of a named subsystem on one device."
+    '"subsystem": <gateway|cctv|ias|bas|fas|timeLock|accessControl or null>}\n'
+    "Routing rules:\n"
+    "- fleet_health: current fleet/module health, healthy/faulty/offline counts or percentages, "
+    "health distribution, most/least healthy category, deployed-category questions, overall BOI "
+    "status, or what needs attention. Use subsystem for a named category.\n"
+    "- global_overview: hierarchy branch/device count only, not module health.\n"
+    "- device_inventory: list/name branches or devices, current authorization region, and "
+    "branches with live map coordinates.\n"
+    "- alarm_detail: active/unresolved/resolved alarms or alerts, severities, alarm types, alarm "
+    "history, branch alarm/attention questions, oldest/latest alarms, time windows, end time, "
+    "and TAT.\n"
+    "- gateway_status, cctv_status, subsystem_status and the other metric intents are for one "
+    "specific branch/device. They need a device_id when the user supplied a technical id; a "
+    "branch name may be left out because the authorization gate resolves it separately.\n"
+    "Subsystem aliases: TLS=timeLock, ACS=accessControl, IAS=Integrated Alarm System, "
+    "BAS=Burglar/Intrusion Alarm System, FAS=Fire Alarm System.\n"
+    "Examples:\n"
+    'Q: Which device category has the most offline devices? A: {"intent":"fleet_health",'
+    '"device_id":null,"subsystem":null}\n'
+    'Q: Is the CCTV system healthy? A: {"intent":"fleet_health","device_id":null,'
+    '"subsystem":"cctv"}\n'
+    'Q: Are any ACS devices deployed? A: {"intent":"fleet_health","device_id":null,'
+    '"subsystem":"accessControl"}\n'
+    'Q: What is the CCTV status at device 88aa? A: {"intent":"cctv_status",'
+    '"device_id":"88aa","subsystem":"cctv"}\n'
+    'Q: What is the oldest unresolved alarm? A: {"intent":"alarm_detail",'
+    '"device_id":null,"subsystem":null}\n'
+    'Q: Which branches are monitored? A: {"intent":"device_inventory",'
+    '"device_id":null,"subsystem":null}'
 )
 
 
@@ -119,7 +147,7 @@ class LlmIntentExtractor:
                 _SYSTEM_PROMPT,
                 # Prior turns first, so "and what about last week?" has a subject.
                 [*_history_messages(context), {"role": "user", "content": question}],
-                max_tokens=200,
+                max_tokens=300,
                 temperature=0,
             )
             data = _parse_json(text)

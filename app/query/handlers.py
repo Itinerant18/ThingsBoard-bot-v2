@@ -1,19 +1,18 @@
+import asyncio
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from sqlalchemy import select
-
 from app.auth.scope_resolver import resolved_scope
 from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
 from app.config import Settings
-from app.db.models import DeviceEvent
 from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
 from app.normalization.flatten import expand_containers, request_keys
 from app.normalization.snapshot import BranchSnapshot
 from app.query import cctv, derived, history
+from app.query.alarm_answers import AlarmRecord, format_alarm_answer, normalize_alarm
 from app.query.answer_support import (
     LADDER_KEYS,
     first_non_blank,
@@ -23,6 +22,7 @@ from app.query.answer_support import (
     resolve_subsystem_fault,
 )
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
+from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
 from app.query.key_profiles import keys_for
 from app.tasks.live_sync import load_fleet_states
 
@@ -116,6 +116,59 @@ class DeviceInventory:
                 "Your token is not mapped to a customer, so I cannot retrieve device inventory."
             )
         scoped = await self._scope_fn(ctx)
+        question = intent.raw_question.lower()
+        if "region" in question and "active" in question:
+            if ctx.tenant.region:
+                return Answer(
+                    f"One region is active in your current scope: {ctx.tenant.region}.",
+                    {"active_regions": [ctx.tenant.region], "count": 1},
+                    [{"type": "authorization-scope", "resource": "current-user"}],
+                )
+            return Answer(
+                "No single region is selected; your current scope is customer-wide.",
+                {"active_regions": [], "count": 0, "customer_wide": True},
+                [{"type": "authorization-scope", "resource": "current-user"}],
+            )
+        if "map" in question:
+            states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+            markers = []
+            for device_id, raw in states.items():
+                lat = first_non_blank(raw, "lat1", "lat")
+                lon = first_non_blank(raw, "lon1", "lon")
+                try:
+                    latitude = float(lat) if lat is not None else None
+                    longitude = float(lon) if lon is not None else None
+                except (TypeError, ValueError):
+                    continue
+                if latitude is None or longitude is None:
+                    continue
+                snapshot = build_snapshot(raw)
+                markers.append(
+                    {
+                        "device_id": device_id,
+                        "branch": snapshot.identity.branch_name
+                        or snapshot.identity.technical_id
+                        or device_id,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "status": snapshot.gateway.state.value,
+                    }
+                )
+            if not markers:
+                return Answer(
+                    "No branch with current map coordinates is visible in your authorized scope.",
+                    {"map_markers": []},
+                    [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+                )
+            summary = ", ".join(
+                f"{marker['branch']} ({marker['status']})" for marker in markers[:20]
+            )
+            suffix = " (showing first 20)" if len(markers) > 20 else ""
+            return Answer(
+                f"Branches visible on the map: {summary}{suffix}.",
+                {"map_markers": markers},
+                [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+            )
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""
@@ -126,35 +179,123 @@ class DeviceInventory:
         )
 
 
-class AlarmDetail:
-    intent = "alarm_detail"
+class FleetHealth:
+    """Scoped dashboard-style health across deployed device categories."""
+
+    intent = "fleet_health"
+
+    def __init__(self, scope_fn: ScopeFn = _default_scope) -> None:
+        self._scope_fn = scope_fn
 
     async def can_handle(self, intent: ExtractedIntent) -> bool:
         return intent.name == self.intent
 
     async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
-        rows = (
-            (
-                await ctx.db.execute(
-                    select(DeviceEvent.event_type)
-                    .where(
-                        DeviceEvent.tenant_id == ctx.tenant.tenant_id,
-                        DeviceEvent.event_type.in_(["alarm", "alert", "fault"]),
-                    )
-                    .limit(100)
-                )
+        if not ctx.tenant.prefix:
+            return Answer(
+                "Your token is not mapped to a customer, so I cannot retrieve fleet health."
             )
-            .scalars()
-            .all()
-        )
-        counts = Counter(rows)
-        if not counts:
-            return Answer("I found no recorded alarm events for this tenant.", {"alarms": {}})
-        summary = ", ".join(f"{kind}: {count}" for kind, count in counts.items())
+        scoped = await self._scope_fn(ctx)
+        device_ids = scoped.tb_device_ids
+        if intent.device_id:
+            if intent.device_id not in device_ids:
+                return Answer("That device is not in your authorized scope.")
+            device_ids = [intent.device_id]
+        states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, device_ids)
+        snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
+        summary = aggregate_fleet_health(snapshots, device_ids)
         return Answer(
-            f"Recorded alarms: {summary}.",
-            {"alarms": dict(counts)},
-            [{"type": "device_event", "resource": "tenant-scoped"}],
+            format_fleet_health(summary, intent.raw_question, intent.subsystem),
+            {"fleet_health": summary.to_dict()},
+            [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+
+
+class AlarmDetail:
+    intent = "alarm_detail"
+
+    def __init__(
+        self,
+        scope_fn: ScopeFn = _default_scope,
+        client_factory: Callable[[Settings, str], Any] = UserAwareThingsBoardClient,
+    ) -> None:
+        self._scope_fn = scope_fn
+        self._client_factory = client_factory
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        if not ctx.tenant.prefix:
+            return Answer(
+                "Your token is not mapped to a customer, so I cannot retrieve alarms."
+            )
+        if not ctx.tenant.user_token:
+            return Answer("A user token is required to read alarm data.")
+        scoped = await self._scope_fn(ctx)
+        device_ids = scoped.tb_device_ids
+        if intent.device_id:
+            if intent.device_id not in device_ids:
+                return Answer("That device is not in your authorized scope.")
+            device_ids = [intent.device_id]
+        if not device_ids:
+            return Answer("No branches are imported for your authorized scope yet.")
+
+        # Keep a small concurrency bound: a BOI scope can contain 100+ branches and
+        # ThingsBoard exposes alarms per entity, not as one safely scoped bulk query.
+        semaphore = asyncio.Semaphore(8)
+        # The two scope lists align only when every hierarchy leaf has a TB id. If
+        # an unprovisioned leaf exists, guessing by zip could attach the next branch's
+        # name to the wrong alarm; rely on TB's originator name instead.
+        branch_names = (
+            dict(zip(scoped.tb_device_ids, scoped.branch_node_ids, strict=True))
+            if len(scoped.tb_device_ids) == len(scoped.branch_node_ids)
+            else {}
+        )
+        client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
+
+        async def fetch(device_id: str) -> tuple[str, Any, Exception | None]:
+            try:
+                async with semaphore:
+                    return device_id, await client.alarms(device_id), None
+            except Exception as exc:
+                logger.warning("alarm fetch failed for %s", device_id, exc_info=True)
+                return device_id, None, exc
+
+        try:
+            results = await asyncio.gather(*(fetch(device_id) for device_id in device_ids))
+        finally:
+            await client.close()
+
+        alarms: list[AlarmRecord] = []
+        failed = 0
+        for device_id, body, error in results:
+            if error is not None:
+                failed += 1
+                continue
+            rows = body.get("data", []) if isinstance(body, dict) else body
+            if not isinstance(rows, list):
+                continue
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    continue
+                alarm = normalize_alarm(raw, device_id, branch_names.get(device_id))
+                if alarm is not None:
+                    alarms.append(alarm)
+
+        if failed == len(device_ids):
+            return Answer(
+                "I could not reach ThingsBoard alarm data just now. Please retry.",
+                {"error": "thingsboard_unavailable"},
+            )
+        text, structured = format_alarm_answer(alarms, intent.raw_question)
+        if failed:
+            text += f" Alarm data was unavailable for {failed} scoped branch(es)."
+            structured["partial_failures"] = failed
+        return Answer(
+            text,
+            structured,
+            [{"type": "thingsboard-alarms", "resource": "scoped-devices"}],
         )
 
 
