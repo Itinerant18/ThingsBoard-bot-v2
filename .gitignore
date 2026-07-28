@@ -23,3 +23,9 @@ thingsboard_data.json
 thingsboard_keys_dump.json
 *_keys_dump.json
 thingsboard_*.json
+
+# Exported ThingsBoard data lands here. thingsboard_*.json above already covers the
+# credential dumps, but the directory also collects hierarchy and device exports —
+# real branch and customer names for several banks. Ignore the whole directory so a
+# stray `git add -A` cannot publish any of it.
+json_data/

@@ -24,6 +24,7 @@ ALLOWED_INTENTS = (
     "cctv_fleet",
     "user_directory",
     "audit_log",
+    "hierarchy_info",
     "device_inventory",
     "alarm_detail",
     "subsystem_status",

@@ -32,6 +32,7 @@ from app.query.audit import (
 from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
+from app.query.hierarchy_answers import format_hierarchy_answer, load_scoped_tree
 from app.query.key_profiles import keys_for
 from app.query.users import format_user_answer, normalize_users
 from app.tasks.live_sync import load_fleet_states
@@ -253,6 +254,34 @@ class CctvFleet:
             {"cctv_fleet": fleet.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
         )
+
+
+class HierarchyInfo:
+    """Structure of the caller's organization tree — regions, zones, branch counts.
+
+    Built outward from the branches the caller may already read, never from every
+    node carrying the customer prefix: the shape of a bank's network is itself
+    information, and loading by prefix would show a region-scoped user the zones
+    and branch counts of regions ThingsBoard does not authorize them for.
+    """
+
+    intent = "hierarchy_info"
+
+    def __init__(self, scope_fn: ScopeFn = _default_scope) -> None:
+        self._scope_fn = scope_fn
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        if not ctx.tenant.prefix:
+            return Answer(
+                "Your token is not mapped to a customer, so I cannot retrieve the hierarchy."
+            )
+        scoped = await self._scope_fn(ctx)
+        tree = await load_scoped_tree(ctx.db, ctx.tenant.prefix, scoped.branch_node_ids)
+        text, structured = format_hierarchy_answer(tree, intent.raw_question)
+        return Answer(text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}])
 
 
 class UserDirectory:

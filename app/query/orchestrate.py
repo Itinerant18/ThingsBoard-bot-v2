@@ -17,6 +17,7 @@ from app.query.handlers import (
     DeviceInventory,
     FleetHealth,
     GlobalOverview,
+    HierarchyInfo,
     MetricHandler,
     UserDirectory,
 )
@@ -67,6 +68,7 @@ class QueryOrchestrator:
         self.handlers: list[Handler] = [
             GlobalOverview(),
             DeviceInventory(),
+            HierarchyInfo(),
             FleetHealth(),
             CctvFleet(),
             UserDirectory(),

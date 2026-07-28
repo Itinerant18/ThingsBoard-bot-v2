@@ -69,6 +69,27 @@ def _detect_subsystem(text: str) -> str | None:
     return None
 
 
+# Structural questions about the org tree. Deliberately narrow: anything about the
+# STATE of devices in an area belongs to fleet_health or alarm_detail, not here.
+_HIERARCHY_RE = re.compile(
+    r"\borganization hierarchy\b|\borganisation hierarchy\b|\bhierarchy structure\b"
+    r"|\bhierarchy level|\b(?:zones?|branch(?:es)?|regions?) (?:are |currently )?under\b"
+    r"|\b(?:under|within) the \w+(?: \w+)? (?:zone|region|nbg|fgmo)\b"
+    r"|\bis there a[n]? .* (?:branch|zone|region)\b"
+    r"|\bmost branches\b|\bhow many (?:zones?|regions?|branches)\b"
+)
+
+
+def _is_hierarchy_question(text: str) -> bool:
+    if not _HIERARCHY_RE.search(text):
+        return False
+    # "health status of all devices in the EAST zone" names an area but asks about
+    # state; the fleet handlers own that. Structure questions ask WHICH or HOW MANY.
+    return not re.search(
+        r"\bhealth|\bhealthy|\bfaulty|\boffline|\balarm|\balert|\buser|\bstatus\b", text
+    )
+
+
 _AUDIT_RE = re.compile(
     r"\baudit\b|\baudit log|\bactivity log|\bwhat changed\b|\bwho changed\b"
     r"|\bconfiguration change|\bconfig change|\bsystem change|\bchanges were made"
@@ -225,6 +246,8 @@ class KeywordIntentExtractor:
             or ("issue" in text and cctv)
         ):
             intent = "alarm_detail"
+        elif _is_hierarchy_question(text):
+            intent = "hierarchy_info"
         elif _AUDIT_RE.search(text):
             # Before the user branch: "who logged in recently" is a question about the
             # audit TRAIL, while "which users have never logged in" is about the
