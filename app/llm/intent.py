@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 ALLOWED_INTENTS = (
     "global_overview",
     "fleet_health",
+    "cctv_fleet",
     "device_inventory",
     "alarm_detail",
     "subsystem_status",
@@ -53,6 +54,9 @@ _SYSTEM_PROMPT = (
     "- fleet_health: current fleet/module health, healthy/faulty/offline counts or percentages, "
     "health distribution, most/least healthy category, deployed-category questions, overall BOI "
     "status, or what needs attention. Use subsystem for a named category.\n"
+    "- cctv_fleet: CCTV recording status, recording gaps or failures, retention "
+    "compliance, recording storage consumption, and camera/NVR inventory ACROSS "
+    "branches. The single-branch cctv_* intents are for one named branch only.\n"
     "- global_overview: hierarchy branch/device count only, not module health.\n"
     "- device_inventory: list/name branches or devices, current authorization region, and "
     "branches with live map coordinates.\n"

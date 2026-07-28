@@ -69,6 +69,48 @@ def _detect_subsystem(text: str) -> str | None:
     return None
 
 
+# Fleet-shaped CCTV questions. The cctv_* intents all resolve one branch's NVR, so a
+# question spanning branches routed there answered for a single device or refused for
+# want of a device_id.
+_FLEET_SCOPE = (
+    "across all branch", "all branches", "across branches", "every branch",
+    "which branch", "which branches", "fleet", "across all device", "each cctv",
+    "each branch", "per branch",
+)
+_RECORDING_WORDS = (
+    "recording", "record", "retention", "footage", "storage consumption",
+)
+
+
+def _is_fleet_cctv_question(text: str, cctv: bool) -> bool:
+    if not cctv and not any(word in text for word in _RECORDING_WORDS):
+        return False
+    fleet_scoped = any(phrase in text for phrase in _FLEET_SCOPE)
+    if fleet_scoped and (cctv or "recording" in text or "camera" in text):
+        return True
+    # "Are there any recording failures right now?" names no scope but is fleet-wide
+    # by nature: there is no single branch it could mean.
+    return any(
+        phrase in text
+        for phrase in (
+            "recording failure",
+            "recording gap",
+            "recording health",
+            "recording status",
+            "not recording",
+            "no recording",
+            "recording compliance",
+            "storage consumption",
+            "cctv inventory",
+            "inventory status of cctv",
+            "camera models",
+            "cctv camera models",
+            "cameras deployed",
+            "cameras are deployed",
+        )
+    )
+
+
 def _is_fleet_health_question(text: str) -> bool:
     """Question families backed by the deployed-module health aggregation."""
     phrases = (
@@ -161,6 +203,8 @@ class KeywordIntentExtractor:
             or ("issue" in text and cctv)
         ):
             intent = "alarm_detail"
+        elif _is_fleet_cctv_question(text, cctv):
+            intent = "cctv_fleet"
         elif _is_fleet_health_question(text):
             intent = "fleet_health"
         elif bas and has("zone"):

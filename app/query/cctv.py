@@ -17,7 +17,15 @@ from app.query.answer_support import first_integer, first_non_blank
 RETENTION_DAYS = 90
 
 # Per-channel recording-history keys across NVR vendors (Java CctvHandler.REC_KEYS).
+#
+# The `rock` family is DOTTED, not underscored. ThingsBoard stores rock as one JSON
+# container and flatten.expand_containers addresses into it by path, so "rock.VIDEOdETAILS"
+# is the name that resolves and "rock_VIDEOdETAILS" matches nothing on any device in the
+# fleet. The underscore spellings are kept only as a fallback. The Hikvision_/Dahua_/
+# CP_Plus_ keys are genuinely flat attribute names and stay as they are.
 _REC_KEYS = (
+    "rock.VIDEOdETAILS",
+    "rockAI.VIDEOdETAILS",
     "rock_VIDEOdETAILS",
     "VIDEOdETAILS",
     "Hikvision_NVR_CameraRecInfo",
@@ -27,23 +35,34 @@ _REC_KEYS = (
     "Hik_rock_NVR2_VIDEOdETAILS",
 )
 
+# Per-channel SD-card recording history (doc: "SD Recording Information").
+_SD_REC_KEYS = ("rock.SdRecINFO", "rockAI.SdRecINFO", "rock_SdRecINFO")
+
+_HDD_KEYS = ("rock.HddINFO", "rockAI.HddINFO", "rock_HddINFO", "Hikvision_NVR_HDDInfo")
+
+# Per-camera inventory: model, IP, resolution, active status (doc: "Camera Information").
+_CAMERA_KEYS = ("rock.CAMERAdETAILS", "rockAI.CAMERAdETAILS", "rock_CAMERAdETAILS")
+
 # Every key these parsers read. The chat fetch unions this into the timeseries keys for
 # cctv_* intents (which have no key_profile), so vendor JSON blobs stored as telemetry are
 # imported — Java requests the same via keysFor. Keep in sync with the readers below.
 CCTV_KEYS: frozenset[str] = frozenset(
     (
         *_REC_KEYS,
-        "rock_HddINFO",
+        *_SD_REC_KEYS,
+        *_HDD_KEYS,
+        *_CAMERA_KEYS,
         "Hikvision_NVR_model",
-        "rock_model",
-        "rockAI_model",
+        "rock.model",
+        "rockAI.model",
         "Dahua_NVR_model",
         "nvr_brand",
-        "rock_NoOfHDDSlots",
+        "rock.NoOfHDDSlots",
         "Hikvision_NVR_NoOfHDDSlots1",
         "Dahua_NVR_NoOfHDDSlots",
         "count_HDD",
-        "rock_capacity",
+        "rock.capacity",
+        "rock.freeSpace",
         "Hikvision_NVR_capacity1",
         "Dahua_NVR_capacity",
         "Video Resolution",
@@ -56,6 +75,15 @@ CCTV_KEYS: frozenset[str] = frozenset(
         "hddStatus",
     )
 )
+
+
+def _first_list(raw: Mapping[str, Any], keys: tuple[str, ...]) -> list[Any] | None:
+    """First key among vendor spellings that holds a non-empty list."""
+    for key in keys:
+        arr = _as_list(raw.get(key))
+        if arr:
+            return arr
+    return None
 
 
 def _as_list(value: object) -> list[Any] | None:
@@ -116,17 +144,30 @@ def _positive_double(value: str | None) -> float | None:
 
 def device_info(raw: Mapping[str, Any]) -> dict[str, Any]:
     """NVR inventory: vendor, model, HDD slot count, storage TB, resolution. Empty when unknown."""
-    model = first_non_blank(raw, "Hikvision_NVR_model", "rock_model", "rockAI_model", "Dahua_NVR_model")
+    model = first_non_blank(
+        raw, "Hikvision_NVR_model", "rock.model", "rockAI.model", "rock_model", "Dahua_NVR_model"
+    )
     info: dict[str, Any] = {}
     vendor = nvr_vendor(raw, model)
     if vendor is not None:
         info["vendor"] = vendor
     if model is not None:
         info["model"] = model
-    hdd_slots = first_integer(raw, "rock_NoOfHDDSlots", "Hikvision_NVR_NoOfHDDSlots1", "Dahua_NVR_NoOfHDDSlots", "count_HDD")
+    hdd_slots = first_integer(
+        raw,
+        "rock.NoOfHDDSlots",
+        "rock_NoOfHDDSlots",
+        "Hikvision_NVR_NoOfHDDSlots1",
+        "Dahua_NVR_NoOfHDDSlots",
+        "count_HDD",
+    )
     if hdd_slots is not None:
         info["hdd_slots"] = hdd_slots
-    storage = _positive_double(first_non_blank(raw, "rock_capacity", "Hikvision_NVR_capacity1", "Dahua_NVR_capacity"))
+    storage = _positive_double(
+        first_non_blank(
+            raw, "rock.capacity", "rock_capacity", "Hikvision_NVR_capacity1", "Dahua_NVR_capacity"
+        )
+    )
     if storage is not None:
         info["storage_tb"] = storage
     resolution = first_non_blank(raw, "Video Resolution", "Hikvision_NVR_Resolutions", "Dahua_NVR_Resolutions", "CP_Plus_NVR_Resolutions")
@@ -136,9 +177,9 @@ def device_info(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def hdd_info(raw: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Per-slot HDD info from rock_HddINFO. Reads both Hikvision (HDDSlots/HDDcapacity/
-    HDDfreeSpace) and Dahua/XVR (HDDSlot/HDDCapacity/HDDFreeSpace) schemas."""
-    arr = _as_list(raw.get("rock_HddINFO"))
+    """Per-slot HDD info. Reads both Hikvision (HDDSlots/HDDcapacity/HDDfreeSpace) and
+    Dahua/XVR (HDDSlot/HDDCapacity/HDDFreeSpace) field schemas."""
+    arr = _first_list(raw, _HDD_KEYS)
     if arr is None:
         return []
     slots: list[dict[str, str]] = []

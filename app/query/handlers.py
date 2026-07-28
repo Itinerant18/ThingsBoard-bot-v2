@@ -21,6 +21,7 @@ from app.query.answer_support import (
     resolve_subsystem_alarm,
     resolve_subsystem_fault,
 )
+from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
 from app.query.key_profiles import keys_for
@@ -207,6 +208,40 @@ class FleetHealth:
         return Answer(
             format_fleet_health(summary, intent.raw_question, intent.subsystem),
             {"fleet_health": summary.to_dict()},
+            [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+
+
+class CctvFleet:
+    """Recording compliance and camera inventory across every branch in scope."""
+
+    intent = "cctv_fleet"
+
+    def __init__(self, scope_fn: ScopeFn = _default_scope) -> None:
+        self._scope_fn = scope_fn
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        if not ctx.tenant.prefix:
+            return Answer(
+                "Your token is not mapped to a customer, so I cannot retrieve CCTV reports."
+            )
+        scoped = await self._scope_fn(ctx)
+        device_ids = scoped.tb_device_ids
+        if intent.device_id:
+            if intent.device_id not in device_ids:
+                return Answer("That device is not in your authorized scope.")
+            device_ids = [intent.device_id]
+        states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, device_ids)
+        # The NVR payloads arrive as JSON container strings from Redis; the dotted
+        # paths the parsers read only exist after expansion.
+        expanded = {device_id: expand_containers(raw) for device_id, raw in states.items()}
+        fleet = aggregate_cctv(expanded)
+        return Answer(
+            format_cctv_fleet(fleet, intent.raw_question),
+            {"cctv_fleet": fleet.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
         )
 

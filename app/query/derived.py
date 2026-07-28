@@ -73,12 +73,15 @@ def hdd_rows(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     for entry in _as_list(raw.get("rock.HddINFO")):
         if not isinstance(entry, Mapping):
             continue
+        # Two field schemas in the fleet: Dahua/XVR spells them HDDSlot/HDDCapacity/
+        # HDDFreeSpace, Hikvision HDDSlots/HDDcapacity/HDDfreeSpace. Reading only one
+        # returned a null capacity for every Hikvision NVR, which is most of them.
         rows.append(
             {
-                "slot": _text(entry.get("HDDSlot")),
+                "slot": _text(entry.get("HDDSlot") or entry.get("HDDSlots")),
                 "status": _text(entry.get("HDDStatus")),
-                "capacity": _number(entry.get("HDDCapacity")),
-                "free_space": _number(entry.get("HDDFreeSpace")),
+                "capacity": _number(entry.get("HDDCapacity") or entry.get("HDDcapacity")),
+                "free_space": _number(entry.get("HDDFreeSpace") or entry.get("HDDfreeSpace")),
             }
         )
     return rows

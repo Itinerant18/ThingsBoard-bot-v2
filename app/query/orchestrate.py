@@ -12,6 +12,7 @@ from app.query.contracts import Answer, ExtractedIntent, Handler, RequestContext
 from app.query.extract import KeywordIntentExtractor
 from app.query.handlers import (
     AlarmDetail,
+    CctvFleet,
     DeviceInventory,
     FleetHealth,
     GlobalOverview,
@@ -65,6 +66,7 @@ class QueryOrchestrator:
             GlobalOverview(),
             DeviceInventory(),
             FleetHealth(),
+            CctvFleet(),
             AlarmDetail(),
             MetricHandler(),
         ]
