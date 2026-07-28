@@ -1,7 +1,11 @@
 # Production compose for the EC2 host.
 #
-# Unlike docker-compose.yml (local dev), this starts NO Postgres/Redis/RabbitMQ: production
-# uses Tiger Cloud, Upstash and CloudAMQP, all configured through .env.
+# Postgres (Tiger Cloud) and RabbitMQ (CloudAMQP) stay external, configured via .env.
+# Redis is LOCAL: Upstash's free tier caps requests at 500k and live sync exhausted it,
+# which broke every sync cycle at its first Redis call. Everything Redis holds here is
+# rebuildable — fleet snapshot (15-min TTL), the ThingsBoard ACL cache (60s), chat
+# memory, idempotency keys — so one sync cycle restores it after a restart, and paying
+# for managed HA to protect a self-healing cache is poor value.
 #
 # It joins the EXISTING `thingsboard-bot_default` network as an external network so the
 # already-running caddy-proxy can reach this app. Caddy is configured with
@@ -13,6 +17,31 @@
 #   rollback:  docker compose -f docker-compose.prod.yml down && docker start chatbot-demo
 
 services:
+  # Set REDIS_URL=redis://redis:6379/0 in .env to use this rather than Upstash.
+  #
+  # maxmemory is capped because this shares a 1.9 GB single-core box with the app,
+  # consumer and Caddy — an uncapped Redis would eventually OOM-kill a neighbour.
+  # allkeys-lru because everything here is a cache: evicting the coldest key is always
+  # better than refusing a write. Persistence is RDB-only (no appendonly) since the
+  # host has ~1.5 GB free and losing the dataset costs exactly one live-sync cycle.
+  redis:
+    image: redis:7-alpine
+    container_name: chatbot-v2-redis
+    command: >-
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 300 100
+      --appendonly no
+    volumes:
+      - redis_data:/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   chatbot:
     build:
       context: .
@@ -24,6 +53,9 @@ services:
       APP_ROLE: all
     expose: ["8083"]
     restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
 
   consumer:
     image: thingsboard-bot-v2:latest
@@ -31,7 +63,9 @@ services:
     command: python -m app.ingest.consumer
     env_file: [.env]
     restart: always
-    depends_on: [chatbot]
+    depends_on:
+      redis:
+        condition: service_healthy
 
   # Adopted from the old Java project's compose, which held nothing else. The named
   # volumes are declared external under their ORIGINAL project-prefixed names so the
@@ -51,6 +85,7 @@ services:
     depends_on: [chatbot]
 
 volumes:
+  redis_data:
   caddy_data:
     name: thingsboard-bot_caddy_data
     external: true
