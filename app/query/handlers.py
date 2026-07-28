@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from app.auth.scope_resolver import resolved_scope
-from app.auth.tb_acl import caller_identity
+from app.auth.tb_acl import PermissionCheckUnavailable, caller_identity
 from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
 from app.config import Settings
 from app.hierarchy.scope import ScopedBranches
@@ -21,6 +21,13 @@ from app.query.answer_support import (
     resolve_boolean,
     resolve_subsystem_alarm,
     resolve_subsystem_fault,
+)
+from app.query.audit import (
+    AuditScope,
+    filter_entries,
+    format_audit_answer,
+    normalize_entries,
+    window_bounds,
 )
 from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
@@ -303,6 +310,111 @@ class UserDirectory:
         return Answer(
             text, structured, [{"type": "thingsboard-users", "resource": scope_label}]
         )
+
+
+class AuditLog:
+    """Audit activity, filtered down to the caller.
+
+    ThingsBoard has no per-customer audit endpoint, so the tenant-wide stream is read
+    with an administrator credential and then reduced to what the caller may see. The
+    ALLOW-LIST is built from the caller's own token — their customer's user list and
+    their authorized device ids — never from the administrator's view, because a
+    filter built from the admin's data would leak exactly what it is meant to stop.
+
+    Failure to build the allow-list raises PermissionCheckUnavailable, which the
+    orchestrator turns into a refusal. It must never degrade into "no filter".
+    """
+
+    intent = "audit_log"
+
+    # A question with no period gets a week — long enough to answer "recently",
+    # short enough that the page cap is rarely reached.
+    DEFAULT_WINDOW_HOURS = 24 * 7
+
+    def __init__(
+        self,
+        identity_fn: Callable[[RequestContext], Awaitable[Any]] | None = None,
+        client_factory: Callable[[Settings, str], Any] = UserAwareThingsBoardClient,
+        scope_fn: ScopeFn = _default_scope,
+    ) -> None:
+        self._identity_fn = identity_fn or UserDirectory._default_identity
+        self._client_factory = client_factory
+        self._scope_fn = scope_fn
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def _caller_scope(
+        self, ctx: RequestContext, identity: Any, client: Any
+    ) -> AuditScope:
+        """Allow-list, from the CALLER's token only."""
+        try:
+            body = await client.customer_users(identity.customer_id)
+        except Exception as exc:
+            # No allow-list means no basis to show anything. Refuse rather than
+            # fall through to an unfiltered stream.
+            raise PermissionCheckUnavailable("could not resolve the caller's users") from exc
+        rows = body.get("data", []) if isinstance(body, dict) else body
+        user_ids = {
+            str((row.get("id") or {}).get("id"))
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, dict) and isinstance(row.get("id"), dict)
+        }
+        scoped = await self._scope_fn(ctx)
+        return AuditScope(
+            customer_id=identity.customer_id,
+            user_ids=frozenset(user_ids),
+            device_ids=frozenset(scoped.tb_device_ids),
+        )
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        if not ctx.tenant.user_token:
+            return Answer("A user token is required to read audit logs.")
+        identity = await self._identity_fn(ctx)
+        window = intent.window
+        hours = window.hours if window is not None else self.DEFAULT_WINDOW_HOURS
+        label = window.label if window is not None else "the last week"
+        start_ts, end_ts = window_bounds(hours)
+
+        if identity.is_tenant_admin:
+            # A tenant admin is entitled to the whole stream; read it under their own
+            # token so ThingsBoard, not this service, enforces that.
+            client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
+            try:
+                body = await client.audit_logs(start_ts, end_ts)
+            finally:
+                await client.close()
+            scope = AuditScope(unrestricted=True)
+            scope_label = "this ThingsBoard tenant"
+        elif identity.customer_id:
+            caller_client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
+            try:
+                scope = await self._caller_scope(ctx, identity, caller_client)
+            finally:
+                await caller_client.close()
+            # Only now, with the allow-list already built, read the tenant stream.
+            body = await ctx.tb.audit_logs(start_ts, end_ts)
+            scope_label = "your customer account"
+        else:
+            return Answer(
+                "Your ThingsBoard account is not assigned to a customer, so there is no "
+                "audit activity I can attribute to you.",
+                {"scope": "none", "entries": []},
+            )
+
+        rows = body.get("data", []) if isinstance(body, dict) else body
+        truncated = bool(isinstance(body, dict) and body.get("truncated"))
+        visible = filter_entries(normalize_entries(rows if isinstance(rows, list) else []), scope)
+        logger.info(
+            "[AUDIT] scope=%s fetched=%d visible=%d",
+            scope_label,
+            len(rows) if isinstance(rows, list) else 0,
+            len(visible),
+        )
+        text, structured = format_audit_answer(
+            visible, intent.raw_question, scope_label, label, truncated=truncated
+        )
+        return Answer(text, structured, [{"type": "thingsboard-audit", "resource": scope_label}])
 
 
 class AlarmDetail:

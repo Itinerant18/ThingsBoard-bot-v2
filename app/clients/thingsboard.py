@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # they are not one customer's device list.)
 _MAX_PAGES = 50  # ponytail: 5k devices at the default page size; raise if a fleet outgrows it
 _MAX_ALARM_PAGES = 5  # 500 alarms/device bounds a fleet-wide history request
+# The tenant audit log holds tens of thousands of rows and only a fraction survive
+# per-caller filtering, so the page cap is generous and truncation is DISCLOSED —
+# answering "no entries" because the match sat past the cap is a wrong answer that
+# looks like a right one.
+_MAX_AUDIT_PAGES = 20
 
 
 def require_uuid(value: str, label: str = "id") -> str:
@@ -45,6 +50,7 @@ async def fetch_all_pages(
     """
     rows: list[Any] = []
     body: Any = None
+    truncated = False
     for page in range(max_pages):
         body = await get(path, {"pageSize": page_size, "page": page})
         if not isinstance(body, dict):
@@ -55,9 +61,13 @@ async def fetch_all_pages(
     else:
         # Exhausting the cap means the result IS truncated — say so rather than
         # handing back a short list wearing hasNext=False, which is the exact
-        # silent-drop this function exists to remove.
+        # silent-drop this function exists to remove. The flag is carried in the body
+        # so a caller can disclose it to the user, not merely log it.
         logger.warning("[TB] %s hit the %d-page cap; result is truncated", path, max_pages)
-    return {**body, "data": rows, "hasNext": False} if isinstance(body, dict) else {"data": rows}
+        truncated = True
+    if isinstance(body, dict):
+        return {**body, "data": rows, "hasNext": False, "truncated": truncated}
+    return {"data": rows, "truncated": truncated}
 
 
 class ThingsBoardClient:
@@ -122,6 +132,31 @@ class ThingsBoardClient:
         return await self._get(
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/{scope}"
         )
+
+    async def audit_logs(
+        self, start_ts: int, end_ts: int, page_size: int = 100, max_pages: int = _MAX_AUDIT_PAGES
+    ) -> Any:
+        """Tenant-wide audit log for a time range.
+
+        ThingsBoard exposes audit only at tenant scope — there is no per-customer
+        endpoint — so this returns EVERY customer's activity and the caller must
+        filter it. app/query/audit.py is the only thing allowed to consume it, and
+        does so against an allow-list built from the end user's own token.
+        """
+
+        async def get(path: str, params: dict[str, Any]) -> Any:
+            return await self._get(
+                path,
+                {
+                    **params,
+                    "startTime": start_ts,
+                    "endTime": end_ts,
+                    "sortProperty": "createdTime",
+                    "sortOrder": "DESC",
+                },
+            )
+
+        return await fetch_all_pages(get, "/api/audit/logs", page_size, max_pages=max_pages)
 
     async def alarms(self, device_id: str, page_size: int = 100) -> Any:
         """Alarm history for one device, including active and cleared alarms."""
@@ -213,6 +248,26 @@ class UserAwareThingsBoardClient:
         return await self._get(
             f"/api/plugins/telemetry/DEVICE/{device_id}/values/attributes/{scope}"
         )
+
+    async def audit_logs(
+        self, start_ts: int, end_ts: int, page_size: int = 100, max_pages: int = _MAX_AUDIT_PAGES
+    ) -> Any:
+        """Audit log under the CALLER's token. ThingsBoard returns 403 unless they are
+        really a tenant admin, so this needs no filtering — TB has already done it."""
+
+        async def get(path: str, params: dict[str, Any]) -> Any:
+            return await self._get(
+                path,
+                {
+                    **params,
+                    "startTime": start_ts,
+                    "endTime": end_ts,
+                    "sortProperty": "createdTime",
+                    "sortOrder": "DESC",
+                },
+            )
+
+        return await fetch_all_pages(get, "/api/audit/logs", page_size, max_pages=max_pages)
 
     async def customer_users(self, customer_id: str, page_size: int = 100) -> Any:
         """Users assigned to ONE customer.

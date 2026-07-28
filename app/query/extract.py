@@ -69,6 +69,14 @@ def _detect_subsystem(text: str) -> str | None:
     return None
 
 
+_AUDIT_RE = re.compile(
+    r"\baudit\b|\baudit log|\bactivity log|\bwhat changed\b|\bwho changed\b"
+    r"|\bconfiguration change|\bconfig change|\bsystem change|\bchanges were made"
+    r"|\bwho did what\b|\bfailed (?:login|action)"
+    # "what actions were performed by X" is a question about the trail, not the
+    # directory — it says "user" but wants activity.
+    r"|\bactions? (?:were |was )?performed\b|\bperformed by\b"
+)
 _USER_RE = re.compile(r"\buser|\blogin|\blogged in|\baccount(s)?\b|\brole(s)?\b|\bpermission")
 # "device user" is not a person, and a role question about MODULES is a config question.
 _NOT_USER_RE = re.compile(r"\bdevice user|\buser device|\bend[- ]user device")
@@ -217,6 +225,11 @@ class KeywordIntentExtractor:
             or ("issue" in text and cctv)
         ):
             intent = "alarm_detail"
+        elif _AUDIT_RE.search(text):
+            # Before the user branch: "who logged in recently" is a question about the
+            # audit TRAIL, while "which users have never logged in" is about the
+            # directory. Audit wins only when the question names audit-shaped things.
+            intent = "audit_log"
         elif _is_user_question(text):
             intent = "user_directory"
         elif _is_fleet_cctv_question(text, cctv):
