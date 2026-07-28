@@ -9,9 +9,12 @@ pipeline.
 
 import json
 import re
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.query.contracts import ExtractedIntent
+
+if TYPE_CHECKING:
+    from app.query.memory import ChatContext
 
 # Only intents the orchestrator has a handler for. Widen alongside new handlers;
 # the LLM must not emit an intent that dead-ends at "could not map".
@@ -60,7 +63,9 @@ class _Completer(Protocol):
 
 
 class _Extractor(Protocol):
-    async def extract(self, question: str) -> ExtractedIntent: ...
+    async def extract(
+        self, question: str, context: "ChatContext | None" = None
+    ) -> ExtractedIntent: ...
 
 
 def _parse_json(text: str) -> dict[str, object]:
@@ -71,6 +76,25 @@ def _parse_json(text: str) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError("intent JSON was not an object")  # noqa: TRY004 (caught, fail-closed)
     return data
+
+
+def _history_messages(context: "ChatContext | None") -> list[dict[str, str]]:
+    """Prior turns as chat messages, oldest first.
+
+    This is the whole point of Phase 1: the history was already being written to
+    Redis on every turn and then never read, so the model saw each question in
+    isolation and "and what about last week?" resolved to nothing.
+
+    A sliding window in the prompt — not a vector search — is the right mechanism
+    here: the last few turns are wanted in ORDER and in full, which similarity
+    search would neither preserve nor guarantee.
+    """
+    if context is None or not context.history:
+        return []
+    return [
+        {"role": "assistant" if role == "assistant" else "user", "content": text}
+        for role, text in context.history
+    ]
 
 
 def _str_or_none(value: object) -> str | None:
@@ -85,13 +109,16 @@ class LlmIntentExtractor:
         self._llm = llm
         self._fallback = fallback
 
-    async def extract(self, question: str) -> ExtractedIntent:
+    async def extract(
+        self, question: str, context: "ChatContext | None" = None
+    ) -> ExtractedIntent:
         if not question.strip():
-            return await self._fallback.extract(question)
+            return await self._fallback.extract(question, context)
         try:
             text = await self._llm.complete(
                 _SYSTEM_PROMPT,
-                [{"role": "user", "content": f"Extract the intent from:\n{question}"}],
+                # Prior turns first, so "and what about last week?" has a subject.
+                [*_history_messages(context), {"role": "user", "content": question}],
                 max_tokens=200,
                 temperature=0,
             )
@@ -106,5 +133,6 @@ class LlmIntentExtractor:
                 raw_question=question,
             )
         except Exception:  # noqa: BLE001 — deliberate: extractor must never raise into chat
-            # Fail closed to the deterministic keyword classifier.
-            return await self._fallback.extract(question)
+            # Fail closed to the deterministic keyword classifier, which now also
+            # resolves fragments from the same context.
+            return await self._fallback.extract(question, context)

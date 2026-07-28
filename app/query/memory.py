@@ -37,6 +37,10 @@ def _hist_key(session: str) -> str:
     return f"{_PREFIX}:{session}:hist"
 
 
+def _intent_key(session: str) -> str:
+    return f"{_PREFIX}:{session}:intent"
+
+
 def _branch_key(session: str) -> str:
     return f"{_PREFIX}:{session}:branch"
 
@@ -50,12 +54,14 @@ class ChatContext:
     history: tuple[tuple[str, str], ...] = ()  # (role, text), oldest -> newest
     device_id: str | None = None  # active branch device
     branch_name: str | None = None
+    intent: str | None = None  # last resolved intent, for fragment follow-ups
 
 
 async def load_context(redis: "Redis", session: str) -> ChatContext:
     try:
         raw_history = await redis.lrange(_hist_key(session), 0, -1)
         raw_branch = await redis.get(_branch_key(session))
+        raw_intent = await redis.get(_intent_key(session))
     except Exception:
         logger.warning("chat memory read failed for session", exc_info=True)
         return ChatContext()
@@ -75,7 +81,12 @@ async def load_context(redis: "Redis", session: str) -> ChatContext:
             branch_name = branch.get("branch_name") or None
         except (json.JSONDecodeError, AttributeError):
             pass
-    return ChatContext(history=tuple(history), device_id=device_id, branch_name=branch_name)
+    return ChatContext(
+        history=tuple(history),
+        device_id=device_id,
+        branch_name=branch_name,
+        intent=_text(raw_intent) if raw_intent else None,
+    )
 
 
 async def record_turn(redis: "Redis", session: str, question: str, answer_text: str) -> None:
@@ -106,8 +117,21 @@ async def set_active_branch(
         logger.warning("chat memory branch write failed for session", exc_info=True)
 
 
+async def set_active_intent(redis: "Redis", session: str, intent: str) -> None:
+    """Remember the last resolved intent so a fragment can inherit it.
+
+    "and last week?" carries no intent words of its own; without this the keyword
+    classifier falls through to its global_overview default and answers a question
+    the user did not ask.
+    """
+    try:
+        await redis.set(_intent_key(session), intent, ex=SESSION_TTL_SECONDS)
+    except Exception:
+        logger.warning("chat memory intent write failed for session", exc_info=True)
+
+
 async def clear(redis: "Redis", session: str) -> None:
     try:
-        await redis.delete(_hist_key(session), _branch_key(session))
+        await redis.delete(_hist_key(session), _branch_key(session), _intent_key(session))
     except Exception:
         logger.warning("chat memory clear failed for session", exc_info=True)

@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class _Extractor(Protocol):
-    async def extract(self, question: str) -> ExtractedIntent: ...
+    # `context` is optional so a test double can still be a bare one-arg callable.
+    async def extract(
+        self, question: str, context: memory.ChatContext | None = None
+    ) -> ExtractedIntent: ...
 
 
 GateFn = Callable[[str, RequestContext], Awaitable[BranchGateResult]]
@@ -97,20 +100,26 @@ class QueryOrchestrator:
                 f"You are not authorized to access branch '{gate.unauthorized_branch}'.",
                 {"unauthorized_branch": gate.unauthorized_branch},
             )
-        intent = await self.extractor.extract(question)
+        # Load the session context ONCE and pass it to the extractor. The history was
+        # already being written on every turn and then never read: the extractor saw
+        # each question in isolation, so anything that leaned on the previous turn
+        # ("and last week?", "why?") resolved to the default intent.
+        remembered = (
+            await memory.load_context(ctx.redis, session_id) if session_id else memory.ChatContext()
+        )
+
+        intent = await self.extractor.extract(question, remembered)
         if gate.device_id is not None and not _is_uuid(intent.device_id):
             # The extractor's device_id is free text (an LLM may echo a branch NAME
             # there); only a real UUID may override the gate's scoped resolution.
             intent = replace(intent, device_id=gate.device_id, node_name=gate.branch_name)
-        elif session_id and intent.device_id is None:
+        elif intent.device_id is None and remembered.device_id is not None:
             # Follow-up ("and its battery?"): no branch in this question — fall back to
             # the session's active branch. It was resolved within THIS user's scope, and
             # MetricHandler re-verifies scope on every call, so a stale scope cannot leak.
-            remembered = await memory.load_context(ctx.redis, session_id)
-            if remembered.device_id is not None:
-                intent = replace(
-                    intent, device_id=remembered.device_id, node_name=remembered.branch_name
-                )
+            intent = replace(
+                intent, device_id=remembered.device_id, node_name=remembered.branch_name
+            )
 
         answer: Answer | None = None
         for handler in self.handlers:
@@ -122,6 +131,11 @@ class QueryOrchestrator:
 
         if session_id:
             await memory.record_turn(ctx.redis, session_id, question, answer.text)
+            # Remember the resolved intent so the NEXT fragment can inherit it. Only
+            # intents that actually answered something — a failed lookup is a poor
+            # subject for "and last week?" to attach to.
+            if answer.structured.get("error") is None:
+                await memory.set_active_intent(ctx.redis, session_id, intent.name)
             if gate.device_id is not None:
                 await memory.set_active_branch(
                     ctx.redis, session_id, gate.device_id, gate.branch_name

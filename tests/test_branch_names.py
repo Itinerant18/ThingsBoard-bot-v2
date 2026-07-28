@@ -162,7 +162,7 @@ async def test_orchestrator_gate_overrides_non_uuid_extractor_device() -> None:
         return BranchGateResult(device_id=D1, branch_name="BOI-LILUAH")
 
     class _NameEchoExtractor:
-        async def extract(self, question: str) -> ExtractedIntent:
+        async def extract(self, question: str, context: object = None) -> ExtractedIntent:
             return ExtractedIntent(name="battery_voltage", device_id="Liluah")
 
     capture = _CaptureHandler()

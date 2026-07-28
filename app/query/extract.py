@@ -1,6 +1,42 @@
 import re
+from typing import TYPE_CHECKING
 
 from app.query.contracts import ExtractedIntent
+
+if TYPE_CHECKING:
+    from app.query.memory import ChatContext
+
+# Words that carry an intent of their own. A question containing none of these is
+# almost certainly a follow-up leaning on the previous turn.
+_INTENT_WORDS = (
+    "gateway", "battery", "volt", "current", "power", "cctv", "camera", "hdd",
+    "network", "operator", "sos", "door", "alarm", "alert", "subsystem", "ias",
+    "fas", "bas", "time lock", "access control", "device", "branch", "inventory",
+    "status", "health", "hardware", "firmware", "recording", "storage", "zone",
+    "panel", "connected", "tamper", "disconnect", "fault",
+)
+
+# Openers that explicitly reference the previous turn.
+_FOLLOW_UP_MARKERS = (
+    "what about", "how about", "and ", "also", "same for", "that one", "it",
+    "why", "when", "compare", "instead", "too", "as well", "last week",
+    "yesterday", "last month", "previous",
+)
+
+
+def _is_fragment(text: str) -> bool:
+    """True when a question cannot stand on its own and needs the previous turn.
+
+    Deliberately conservative: it requires the question to name NO intent of its own.
+    A false positive would answer the wrong question, so anything self-contained
+    ("cctv status of Liluah") is classified normally even if it also says "and".
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if any(word in stripped for word in _INTENT_WORDS):
+        return False
+    return any(marker in stripped for marker in _FOLLOW_UP_MARKERS) or len(stripped.split()) <= 4
 
 
 def _detect_subsystem(text: str) -> str | None:
@@ -25,8 +61,22 @@ class KeywordIntentExtractor:
     QueryIntentResolver (60 intents, fuzzy branch match, glossary) — port that when
     branch snapshots + alias index land."""
 
-    async def extract(self, question: str) -> ExtractedIntent:
+    async def extract(
+        self, question: str, context: "ChatContext | None" = None
+    ) -> ExtractedIntent:
         text = question.lower()
+
+        # A fragment carries no intent words of its own ("and last week?", "why?",
+        # "what about Howrah"). Without the previous intent it falls through to the
+        # global_overview default at the bottom of this chain and answers a question
+        # nobody asked — the single most visible way the bot "forgets".
+        if context is not None and context.intent and _is_fragment(text):
+            return ExtractedIntent(
+                name=context.intent,
+                device_id=None,  # the orchestrator supplies the remembered device
+                subsystem=_detect_subsystem(text) or None,
+                raw_question=question,
+            )
 
         def has(*words: str) -> bool:
             return any(w in text for w in words)
