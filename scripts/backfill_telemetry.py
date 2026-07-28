@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from app.clients.thingsboard import ThingsBoardClient
 from app.config import get_settings
-from app.db.models import HierarchyNode
+from app.db.models import DeviceTelemetry, HierarchyNode
 from app.db.session import build_session_factory
 from app.ingest.telemetry import write_telemetry
 
@@ -134,6 +134,11 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7, help="how far back to pull")
     parser.add_argument("--device", default=None, help="single device uuid")
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="skip devices that already have rows — use to resume an interrupted run",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -150,6 +155,23 @@ async def main() -> None:
             )
         ).all()
     targets = [(str(d), c) for d, c in rows if not args.device or str(d) == args.device]
+
+    if args.skip_existing:
+        # Resume path. A killed run (a deploy recreates the container) leaves its rows
+        # in Tiger, so refetching those devices is hours of pointless ThingsBoard load.
+        async with sessions() as session:
+            done = {
+                str(r[0])
+                for r in (
+                    await session.execute(
+                        select(DeviceTelemetry.device_id).distinct()  # type: ignore[arg-type]
+                    )
+                ).all()
+            }
+        before = len(targets)
+        targets = [(d, c) for d, c in targets if d not in done]
+        logger.info("skipping %d device(s) that already have history", before - len(targets))
+
     logger.info("backfilling %d device(s), %d day(s)", len(targets), args.days)
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
