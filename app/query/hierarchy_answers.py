@@ -19,12 +19,26 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# hierarchy_node.node_type as written by the importer. Level names differ per bank
-# ("NBG" for BOI, "RO" for Canara), so answers use the stored display name and these
-# only decide which layer a question is asking about.
-REGION_TYPES = ("FGMO", "NBG", "REGION", "RO")
-ZONE_TYPES = ("ZO", "ZONE")
-BRANCH_TYPES = ("BRANCH",)
+# NOTHING here classifies a level as "a region" or "a zone", on purpose. The bot
+# serves every head office on the tenant, and the depth and naming of the tree differ
+# not just between banks but WITHIN one — measured over the live export:
+#
+#   BOI     HO -> NBG -> ZO -> BRANCH   (65 devices, but also 3- and 5-level variants)
+#   BOB     HO -> ZO  -> ZO -> BRANCH
+#   SBI     HO -> ZO  -> ZO -> BRANCH
+#   CANARA  HO -> HO  -> BRANCH
+#   PNB     HO -> ZO  -> BRANCH
+#
+# So answers are expressed in the only two things that hold everywhere: a node's
+# CHILDREN and its descendant LEAVES. The caller's word — zone, region, NBG, RO, LHO,
+# circle — merely selects which of those two they meant.
+
+# Level words to strip when matching a name, so "the EAST zone" finds "NBG EAST" and
+# "RO Kolkata" is found by "Kolkata". Bank names are deliberately NOT in this list.
+_LEVEL_WORDS = (
+    "zo", "zone", "zonal", "nbg", "fgmo", "region", "regional", "ro", "rbo", "lho",
+    "co", "circle", "branch", "ho", "head", "office", "the", "of", "under", "all",
+)
 
 
 @dataclass(frozen=True)
@@ -47,14 +61,51 @@ class ScopedTree:
 
     @property
     def leaves(self) -> list[Node]:
-        return [node for node in self.nodes.values() if node.is_leaf]
-
-    def of_type(self, types: Sequence[str]) -> list[Node]:
-        wanted = {t.upper() for t in types}
         return sorted(
-            (n for n in self.nodes.values() if n.node_type.upper() in wanted),
+            (node for node in self.nodes.values() if node.is_leaf),
             key=lambda n: n.display_name,
         )
+
+    @property
+    def root(self) -> Node | None:
+        """The shallowest node. Every tree here has exactly one — the importer always
+        writes a head-office node, inserting one when the path lacks it."""
+        candidates = [n for n in self.nodes.values() if n.parent_id not in self.nodes]
+        return min(candidates, key=lambda n: n.level) if candidates else None
+
+    @property
+    def areas(self) -> list[Node]:
+        """Every grouping level between the root and the branches, whatever it is
+        called. This is what a caller means by "zones" or "regions"."""
+        root = self.root
+        return sorted(
+            (
+                node
+                for node in self.nodes.values()
+                if not node.is_leaf and (root is None or node.node_id != root.node_id)
+            ),
+            key=lambda n: (n.level, n.display_name),
+        )
+
+    @property
+    def top_areas(self) -> list[Node]:
+        """The root's direct children — the widest grouping this customer has."""
+        root = self.root
+        if root is None:
+            return []
+        return [self.nodes[nid] for nid in self.children.get(root.node_id, [])]
+
+    def children_of(self, node_id: str) -> list[Node]:
+        return [self.nodes[nid] for nid in self.children.get(node_id, [])]
+
+    def sub_areas(self, node_id: str) -> list[Node]:
+        """Child GROUPINGS, excluding branches.
+
+        A customer whose grouping level holds branches directly (PNB, Canara) has
+        none, and counting its branches as sub-areas reported one level of structure
+        that does not exist.
+        """
+        return [node for node in self.children_of(node_id) if not node.is_leaf]
 
     def descendant_leaves(self, node_id: str) -> list[Node]:
         return [
@@ -120,26 +171,61 @@ async def load_scoped_tree(
     return tree
 
 
+# An area filter is only in play when the question names a LEVEL — "the EAST zone",
+# "NBG East", "RO Kolkata". Checking first keeps the tree query off the path of every
+# fleet and alarm question, which is nearly all of them.
+_NAMES_A_LEVEL = re.compile(
+    r"\bzones?\b|\bzonal\b|\bregions?\b|\bregional\b|\bnbg\b|\bfgmo\b|\bro\b|\brbo\b"
+    r"|\blho\b|\bcircles?\b|\bzo\b"
+)
+
+
+async def area_device_filter(
+    db: "AsyncSession", prefix: str, branch_node_ids: Sequence[str], question: str
+) -> tuple[list[str] | None, str | None]:
+    """Devices under the area a question names, or (None, None) if it names none.
+
+    Lets "health status in the EAST zone" reuse the fleet answers instead of growing
+    a parallel set of area-shaped handlers. This only ever NARROWS: the tree is built
+    from branches the caller is already authorized for, so an area named in the
+    question can subtract devices from the scope but never add one.
+    """
+    if not branch_node_ids or not _NAMES_A_LEVEL.search(question.lower()):
+        return None, None
+    tree = await load_scoped_tree(db, prefix, branch_node_ids)
+    if not tree.nodes:
+        return None, None
+    area = find_area(tree, question, [n for n in tree.nodes.values() if not n.is_leaf])
+    root = tree.root
+    if area is None or (root is not None and area.node_id == root.node_id):
+        # Naming the bank itself is not a filter — it IS the caller's whole scope.
+        return None, None
+    return tree.device_ids_under(area.node_id), area.display_name
+
+
 def _norm(value: str) -> str:
-    """Strip the level word so "the EAST zone" matches a node named "NBG EAST"."""
+    """Reduce a name or question to its distinguishing words.
+
+    Level words go because the caller's vocabulary rarely matches the stored name —
+    "the EAST zone" has to find "NBG EAST", "Kolkata" has to find "RO KOLKATA - I".
+    Bank names deliberately stay: they are what distinguishes one head office's root
+    node from another's, and stripping them would make every tenant's root identical.
+    """
     text = re.sub(r"[^a-z0-9 ]+", " ", value.lower())
-    text = re.sub(
-        r"\b(zo|zone|nbg|fgmo|region|ro|branch|bank of india|boi|the|of)\b", " ", text
-    )
+    text = re.sub(rf"\b(?:{'|'.join(_LEVEL_WORDS)})\b", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
-def find_area(tree: ScopedTree, question: str, types: Sequence[str] | None = None) -> Node | None:
-    """The tree node a question names, matched on the significant words of its name.
+def find_area(tree: ScopedTree, question: str, pool: Sequence[Node] | None = None) -> Node | None:
+    """The tree node a question names, matched on the distinguishing words of its name.
 
-    Longest match wins so "WEST II" is not shadowed by a node called "WEST".
+    Longest match wins, so "WEST II" is not shadowed by a node called "WEST".
     """
     asked = _norm(question)
     if not asked:
         return None
-    pool = tree.of_type(types) if types else list(tree.nodes.values())
     best: Node | None = None
-    for node in pool:
+    for node in pool if pool is not None else tree.nodes.values():
         name = _norm(node.display_name)
         if name and re.search(rf"\b{re.escape(name)}\b", asked):
             if best is None or len(name) > len(_norm(best.display_name)):
@@ -154,12 +240,12 @@ def _names(nodes: Sequence[Node], limit: int = 20) -> str:
 
 def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[str, Any]]:
     text = question.lower()
-    regions = tree.of_type(REGION_TYPES)
-    zones = tree.of_type(ZONE_TYPES)
+    areas = tree.areas
+    top = tree.top_areas
     branches = tree.leaves
     structured: dict[str, Any] = {
-        "regions": [n.display_name for n in regions],
-        "zones": [n.display_name for n in zones],
+        "top_areas": [n.display_name for n in top],
+        "areas": [n.display_name for n in areas],
         "branch_count": len(branches),
     }
 
@@ -188,72 +274,77 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
         )
 
     area = find_area(tree, question)
+    counting = "how many" in text or "count" in text
 
-    # Decide by what is being ASKED FOR, not merely by which words appear. Operators
-    # call an NBG region "the EAST zone", so "which branches are under the EAST zone"
-    # contains "zone" while asking for branches — keying off the word alone answered
-    # with a zone count.
+    # What is being ASKED FOR, not merely which words appear. Operators call an NBG
+    # region "the EAST zone", so "which branches are under the EAST zone" says "zone"
+    # while asking for branches. And "zone" vs "region" vs "NBG" is one bank's
+    # vocabulary for a level another bank names differently, so neither word is taken
+    # to mean a particular DEPTH — only "branch" is, because leaves are leaves
+    # everywhere.
     wants_branches = "branch" in text
-    wants_zones = not wants_branches and re.search(r"\bzones?\b", text) is not None
+    wants_areas = not wants_branches and re.search(
+        r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b|\bro\b|\blho\b", text
+    )
 
-    if wants_zones and area is not None and area.node_type.upper() in {
-        t.upper() for t in REGION_TYPES
-    }:
-        under = [tree.nodes[nid] for nid in tree.children.get(area.node_id, [])]
-        if "how many" in text or "count" in text:
-            return f"{len(under)} zone(s) under {area.display_name}.", structured
-        return (
-            f"Zones under {area.display_name}: {_names(under)}."
-            if under
-            else f"No zone is recorded under {area.display_name}.",
-            structured,
-        )
-
-    if area is not None and (wants_branches or "under" in text or "list" in text):
-        leaves = tree.descendant_leaves(area.node_id)
+    if area is not None:
         structured["area"] = area.display_name
-        structured["branches"] = [n.display_name for n in leaves]
-        if "how many" in text or "count" in text:
-            return f"{len(leaves)} branch(es) under {area.display_name}.", structured
-        if not leaves:
-            return f"No branch is recorded under {area.display_name}.", structured
-        return f"Branches under {area.display_name}: {_names(leaves)}.", structured
+        if wants_areas and not area.is_leaf:
+            under = tree.sub_areas(area.node_id)
+            structured["children"] = [n.display_name for n in under]
+            if counting:
+                return f"{len(under)} area(s) under {area.display_name}.", structured
+            return (
+                f"Under {area.display_name}: {_names(under)}."
+                if under
+                else f"{area.display_name} has no sub-areas; it holds branches directly.",
+                structured,
+            )
+        if wants_branches or "under" in text or "list" in text:
+            leaves = tree.descendant_leaves(area.node_id)
+            structured["branches"] = [n.display_name for n in leaves]
+            if counting:
+                return f"{len(leaves)} branch(es) under {area.display_name}.", structured
+            if not leaves:
+                return f"No branch is recorded under {area.display_name}.", structured
+            return f"Branches under {area.display_name}: {_names(leaves)}.", structured
 
-    if "how many" in text and "zone" in text:
-        return f"{len(zones)} zone(s) in your authorized scope.", structured
-    if "how many" in text and ("region" in text or "fgmo" in text or "nbg" in text):
-        return f"{len(regions)} region(s) in your authorized scope.", structured
-    if "how many" in text and "branch" in text:
+    if counting and wants_branches:
         return f"{len(branches)} branch(es) in your authorized scope.", structured
+    if counting and wants_areas:
+        return f"{len(areas)} area(s) in your authorized scope.", structured
 
     if "most branches" in text or "most branch" in text:
-        if not regions:
-            return "No region level is recorded in your authorized scope.", structured
-        ranked = sorted(
-            regions, key=lambda n: len(tree.descendant_leaves(n.node_id)), reverse=True
-        )
-        top = ranked[0]
+        if not top:
+            return (
+                f"Your authorized scope has no grouping level above its "
+                f"{len(branches)} branch(es).",
+                structured,
+            )
+        ranked = sorted(top, key=lambda n: len(tree.descendant_leaves(n.node_id)), reverse=True)
+        leader = ranked[0]
         return (
-            f"{top.display_name} has the most branches under monitoring: "
-            f"{len(tree.descendant_leaves(top.node_id))}.",
+            f"{leader.display_name} has the most branches under monitoring: "
+            f"{len(tree.descendant_leaves(leader.node_id))}.",
             structured,
         )
 
-    # Default: the shape of the tree.
-    lines = []
-    for region in regions:
-        child_zones = [tree.nodes[nid] for nid in tree.children.get(region.node_id, [])]
-        lines.append(
-            f"{region.display_name} ({len(child_zones)} zones, "
-            f"{len(tree.descendant_leaves(region.node_id))} branches)"
-        )
-    if not lines:
+    # Default: the shape of the tree, described one level at a time so it reads the
+    # same whether the customer has one grouping level or three.
+    if not top:
         return (
             f"Your authorized scope covers {len(branches)} branch(es): {_names(branches)}.",
             structured,
         )
+    lines = [
+        f"{node.display_name} ({len(tree.sub_areas(node.node_id))} sub-areas, "
+        f"{len(tree.descendant_leaves(node.node_id))} branches)"
+        if tree.sub_areas(node.node_id)
+        else f"{node.display_name} ({len(tree.descendant_leaves(node.node_id))} branches)"
+        for node in top
+    ]
     return (
-        f"Your authorized scope covers {len(regions)} region(s), {len(zones)} zone(s) "
-        f"and {len(branches)} branch(es) — " + "; ".join(lines) + ".",
+        f"Your authorized scope covers {len(top)} top-level area(s), {len(areas)} area(s) "
+        f"in total and {len(branches)} branch(es) — " + "; ".join(lines) + ".",
         structured,
     )

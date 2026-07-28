@@ -147,14 +147,14 @@ def test_region_with_the_most_branches() -> None:
 
 
 def test_tree_shape_is_the_default_answer() -> None:
-    reply = answer("What is the current organization hierarchy under Bank of India?")
-    assert "3 region(s), 4 zone(s) and 6 branch(es)" in reply
-    assert "NBG EAST (2 zones, 4 branches)" in reply
+    reply = answer("What is the current organization hierarchy?")
+    assert "3 top-level area(s), 7 area(s) in total and 6 branch(es)" in reply
+    assert "NBG EAST (2 sub-areas, 4 branches)" in reply
 
 
-def test_find_area_can_be_restricted_to_a_level() -> None:
-    assert find_area(FULL, "under the EAST region", ("NBG",)).node_id == "NBG_EAST"
-    assert find_area(FULL, "under the HOWRAH zone", ("ZO",)).node_id == "ZO_HOWRAH"
+def test_find_area_can_be_restricted_to_a_candidate_pool() -> None:
+    assert find_area(FULL, "under the EAST region", FULL.top_areas).node_id == "NBG_EAST"
+    assert find_area(FULL, "under the HOWRAH zone").node_id == "ZO_HOWRAH"
 
 
 def test_device_ids_under_an_area_resolve_for_reuse_by_the_fleet_handlers() -> None:
@@ -209,3 +209,199 @@ async def test_zone_scoped_health_is_not_answered_as_structure() -> None:
         "What is the current health status of all devices in the EAST zone?"
     )
     assert got.name != "hierarchy_info"
+
+
+# --------------------------------------------------------------------------- #
+# Other head offices
+#
+# The bot serves every bank on the tenant, and their trees differ in depth and in
+# what each level is called — measured over the live export. Nothing in the answers
+# may assume BOI's four levels or its "NBG"/"ZO" vocabulary.
+# --------------------------------------------------------------------------- #
+
+
+def _custom_tree(rows: list[tuple[str, str | None, str, int, str, bool]]) -> ScopedTree:
+    parents = {node_id: parent for node_id, parent, *_ in rows}
+    tree = ScopedTree()
+    for node_id, parent, node_type, level, name, is_leaf in rows:
+        tree.nodes[node_id] = Node(node_id, parent, node_type, level, name, is_leaf, None)
+    for node_id, _, _, _, _, is_leaf in rows:
+        if not is_leaf:
+            continue
+        chain, cursor = set(), parents.get(node_id)
+        while cursor:
+            chain.add(cursor)
+            cursor = parents.get(cursor)
+        tree.ancestors[node_id] = chain
+    for node in tree.nodes.values():
+        if node.parent_id in tree.nodes:
+            tree.children.setdefault(node.parent_id, []).append(node.node_id)
+    for kids in tree.children.values():
+        kids.sort(key=lambda nid: tree.nodes[nid].display_name)
+    return tree
+
+
+# CANARA: HO -> HO -> BRANCH. Two head-office levels and no zone at all.
+CANARA = _custom_tree([
+    ("C_HO", None, "HO", 0, "CANARA BANK", False),
+    ("C_HO2", "C_HO", "HO", 1, "HO (Canara Bank)", False),
+    ("C_RO1", "C_HO2", "RO", 2, "RO KOLKATA - I", False),
+    ("C_BR1", "C_RO1", "BRANCH", 3, "CANARA-BEHALA", True),
+])
+
+# SBI: HO -> ZO -> ZO -> BRANCH, with level names carrying no level word at all.
+SBI = _custom_tree([
+    ("S_HO", None, "HO", 0, "STATE BANK OF INDIA", False),
+    ("S_PATNA", "S_HO", "ZO", 1, "PATNA", False),
+    ("S_PATNA2", "S_PATNA", "ZO", 2, "PATNA", False),
+    ("S_BR", "S_PATNA2", "BRANCH", 3, "SBI LHO PATNA", True),
+])
+
+# PNB: HO -> ZO -> BRANCH. One grouping level.
+PNB = _custom_tree([
+    ("P_HO", None, "HO", 0, "PUNJAB NATIONAL BANK", False),
+    ("P_ZO", "P_HO", "ZO", 1, "FAS", False),
+    ("P_BR", "P_ZO", "BRANCH", 2, "PNB-FAS", True),
+])
+
+
+def test_a_bank_whose_grouping_level_is_called_ro_still_answers() -> None:
+    text, _ = format_hierarchy_answer(CANARA, "Which branches are under RO KOLKATA - I?")
+    assert "CANARA-BEHALA" in text
+
+
+def test_a_bank_with_two_head_office_levels_reports_its_own_shape() -> None:
+    text, _ = format_hierarchy_answer(CANARA, "What is the organization hierarchy?")
+    assert "HO (Canara Bank)" in text
+    assert "1 branch" in text
+
+
+def test_a_level_name_carrying_no_level_word_is_still_matched() -> None:
+    """SBI's levels are just "PATNA" — no "ZO", no "NBG" to key off."""
+    text, _ = format_hierarchy_answer(SBI, "How many branches are under PATNA?")
+    assert text.startswith("1 branch(es) under PATNA")
+
+
+def test_a_single_grouping_level_does_not_read_as_a_missing_one() -> None:
+    text, _ = format_hierarchy_answer(PNB, "What is the organization hierarchy?")
+    assert "1 top-level area(s)" in text
+    assert "FAS (1 branches)" in text
+
+
+def test_bank_names_are_not_stripped_when_matching() -> None:
+    """Stripping bank names would make every tenant's root node identical."""
+    from app.query.hierarchy_answers import _norm
+
+    assert _norm("BANK OF INDIA") == "bank india"
+    assert _norm("STATE BANK OF INDIA") == "state bank india"
+    assert _norm("NBG EAST") == "east"
+    assert _norm("RO KOLKATA - I") == "kolkata i"
+
+
+def test_asking_about_a_bank_by_name_does_not_match_another_banks_root() -> None:
+    assert find_area(SBI, "under Bank of India") is None
+    assert find_area(SBI, "under State Bank of India").node_id == "S_HO"
+
+
+# --------------------------------------------------------------------------- #
+# The area filter the fleet handlers reuse
+# --------------------------------------------------------------------------- #
+
+
+class _FakeResult:
+    def __init__(self, rows, scalar_rows=None) -> None:
+        self._rows = rows
+        self._scalar_rows = scalar_rows
+
+    def all(self):
+        return self._rows
+
+    def scalars(self):
+        return self
+
+    def _asdict(self):
+        return {}
+
+
+class _FakeDb:
+    """Replays the two queries load_scoped_tree issues, in order."""
+
+    def __init__(self, tree: ScopedTree) -> None:
+        self._tree = tree
+        self.calls = 0
+
+    async def execute(self, _stmt):
+        self.calls += 1
+        if self.calls == 1:
+            rows = [
+                (leaf, ancestor)
+                for leaf, ancestors in self._tree.ancestors.items()
+                for ancestor in ancestors
+            ]
+            return _FakeResult(rows)
+        nodes = [
+            type(
+                "Row",
+                (),
+                {
+                    "node_id": n.node_id,
+                    "parent_id": n.parent_id,
+                    "node_type": n.node_type,
+                    "node_level": n.level,
+                    "display_name": n.display_name,
+                    "is_leaf": n.is_leaf,
+                    "tb_device_id": n.device_id,
+                },
+            )()
+            for n in self._tree.nodes.values()
+        ]
+        result = _FakeResult(nodes)
+        result.scalars = lambda: type("S", (), {"all": lambda _self=None: nodes})()
+        return result
+
+
+@pytest.mark.asyncio
+async def test_area_filter_narrows_to_the_named_area() -> None:
+    from app.query.hierarchy_answers import area_device_filter
+
+    db = _FakeDb(FULL)
+    ids, name = await area_device_filter(
+        db, "BOI", ALL_LEAVES, "health status of all devices in the HOWRAH zone"
+    )
+    assert name == "ZO HOWRAH"
+    assert sorted(ids) == ["dev-BR_BALLY", "dev-BR_LILUAH"]
+
+
+@pytest.mark.asyncio
+async def test_area_filter_returns_nothing_when_no_level_is_named() -> None:
+    """Most questions name no area, and must not pay for a tree query."""
+    from app.query.hierarchy_answers import area_device_filter
+
+    db = _FakeDb(FULL)
+    ids, name = await area_device_filter(db, "BOI", ALL_LEAVES, "is the CCTV system healthy?")
+    assert (ids, name) == (None, None)
+    assert db.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_naming_the_bank_itself_is_not_a_filter() -> None:
+    from app.query.hierarchy_answers import area_device_filter
+
+    db = _FakeDb(FULL)
+    ids, name = await area_device_filter(
+        db, "BOI", ALL_LEAVES, "device health across all zones of Bank of India"
+    )
+    assert (ids, name) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_area_filter_cannot_widen_beyond_the_callers_scope() -> None:
+    """The tree is built from authorized leaves, so an area named by a zone-scoped
+    caller resolves only within what they may already read."""
+    from app.query.hierarchy_answers import area_device_filter
+
+    db = _FakeDb(HOWRAH_ONLY)
+    ids, name = await area_device_filter(
+        db, "BOI", ["BR_BALLY", "BR_LILUAH"], "device health in the SILIGURI zone"
+    )
+    assert (ids, name) == (None, None)  # SILIGURI is not in their tree at all

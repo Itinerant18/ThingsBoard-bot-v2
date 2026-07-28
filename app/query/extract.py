@@ -172,6 +172,14 @@ def _is_fleet_health_question(text: str) -> bool:
         "needs attention",
         "need attention",
         "all devices healthy",
+        # Area-scoped health: the handler narrows to the named area, so these belong
+        # to fleet_health rather than falling through to the overview default.
+        "health status of all devices",
+        "device health status",
+        "devices are healthy",
+        "worst overall device health",
+        "device count per zone",
+        "zones currently have",
     )
     if any(phrase in text for phrase in phrases):
         return True

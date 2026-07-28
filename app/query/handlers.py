@@ -32,7 +32,11 @@ from app.query.audit import (
 from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
-from app.query.hierarchy_answers import format_hierarchy_answer, load_scoped_tree
+from app.query.hierarchy_answers import (
+    area_device_filter,
+    format_hierarchy_answer,
+    load_scoped_tree,
+)
 from app.query.key_profiles import keys_for
 from app.query.users import format_user_answer, normalize_users
 from app.tasks.live_sync import load_fleet_states
@@ -212,12 +216,28 @@ class FleetHealth:
             if intent.device_id not in device_ids:
                 return Answer("That device is not in your authorized scope.")
             device_ids = [intent.device_id]
+        # "health status of all devices in the EAST zone" — narrow to the named area.
+        # Intersected with the scope, never substituted for it.
+        area_ids, area_name = await area_device_filter(
+            ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, intent.raw_question
+        )
+        if area_ids is not None:
+            allowed = set(device_ids)
+            device_ids = [device_id for device_id in area_ids if device_id in allowed]
+            if not device_ids:
+                return Answer(
+                    f"No device under {area_name} is in your authorized scope.",
+                    {"area": area_name, "fleet_health": None},
+                )
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, device_ids)
         snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
         summary = aggregate_fleet_health(snapshots, device_ids)
+        text = format_fleet_health(summary, intent.raw_question, intent.subsystem)
+        if area_name:
+            text = f"{area_name} — {text}"
         return Answer(
-            format_fleet_health(summary, intent.raw_question, intent.subsystem),
-            {"fleet_health": summary.to_dict()},
+            text,
+            {"area": area_name, "fleet_health": summary.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
         )
 
@@ -473,6 +493,19 @@ class AlarmDetail:
             if intent.device_id not in device_ids:
                 return Answer("That device is not in your authorized scope.")
             device_ids = [intent.device_id]
+        # "active alerts in the EAST zone" — narrow to the named area, intersected
+        # with the scope so it can only ever subtract devices.
+        area_ids, area_name = await area_device_filter(
+            ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, intent.raw_question
+        )
+        if area_ids is not None:
+            allowed = set(device_ids)
+            device_ids = [device_id for device_id in area_ids if device_id in allowed]
+            if not device_ids:
+                return Answer(
+                    f"No device under {area_name} is in your authorized scope.",
+                    {"area": area_name, "alarms": []},
+                )
         if not device_ids:
             return Answer("No branches are imported for your authorized scope yet.")
 
@@ -524,6 +557,9 @@ class AlarmDetail:
                 {"error": "thingsboard_unavailable"},
             )
         text, structured = format_alarm_answer(alarms, intent.raw_question)
+        if area_name:
+            text = f"{area_name} — {text}"
+            structured["area"] = area_name
         if failed:
             text += f" Alarm data was unavailable for {failed} scoped branch(es)."
             structured["partial_failures"] = failed
