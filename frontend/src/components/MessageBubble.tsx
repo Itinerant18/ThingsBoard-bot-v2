@@ -96,6 +96,49 @@ const parseContentBlocks = (text: string): Block[] => {
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onSuggestionClick }) => {
   const isUser = message.role === 'user'
+  const [isCopied, setIsCopied] = React.useState(false)
+
+  const handleCopy = async () => {
+    const textToCopy = message.content || ''
+    if (!textToCopy) return
+
+    const fallbackCopy = (text: string) => {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.style.top = '0'
+      textArea.style.left = '0'
+      textArea.style.position = 'fixed'
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+      try {
+        const successful = document.execCommand('copy')
+        if (successful) {
+          setIsCopied(true)
+          setTimeout(() => setIsCopied(false), 2000)
+        } else {
+          console.error('Fallback copy was unsuccessful')
+        }
+      } catch (err) {
+        console.error('Fallback copy failed', err)
+      }
+      document.body.removeChild(textArea)
+    }
+
+    if (!navigator.clipboard) {
+      fallbackCopy(textToCopy)
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(textToCopy)
+      setIsCopied(true)
+      setTimeout(() => setIsCopied(false), 2000)
+    } catch (err) {
+      console.error('Clipboard API failed: ', err)
+      fallbackCopy(textToCopy)
+    }
+  }
 
   let mainContent = message.content || ''
   let suggestions: string[] = []
@@ -126,15 +169,18 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onSuggest
         {isUser ? 'U' : <img src={botLogoUrl} alt="Bot" className="w-5 h-5 sm:w-6 sm:h-6 object-contain" />}
       </div>
 
-      {/* Bubble */}
-      <div
-        className={`px-3.5 py-2.5 sm:px-4 sm:py-3 text-xs sm:text-sm leading-relaxed ${
-          isUser
-            ? 'leather-bubble rounded-tr-none'
-            : 'paper-card rounded-tl-none text-[#0F172A]'
-        }`}
-        style={!isUser ? { transform: 'none' } : undefined}
-      >
+      {/* Bubble Wrapper */}
+      <div className={`flex flex-col gap-1.5 min-w-0 flex-1 max-w-[calc(100%-2.5rem)] ${isUser ? 'items-end' : 'items-start'}`}>
+        
+        {/* Bubble */}
+        <div
+          className={`px-3.5 py-2.5 sm:px-4 sm:py-3 text-xs sm:text-sm leading-relaxed ${
+            isUser
+              ? 'leather-bubble rounded-tr-none'
+              : 'paper-card rounded-tl-none text-[#0F172A]'
+          }`}
+          style={!isUser ? { transform: 'none' } : undefined}
+        >
         <div className="space-y-2">
           {blocks.map((block, idx) => {
             if (block.type === 'text') {
@@ -178,21 +224,42 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onSuggest
           </div>
         )}
 
-        {!isUser && typeof message.tokensUsed === 'number' && message.tokensUsed > 0 && (
-          <div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400 pt-2 border-t border-slate-100 font-medium">
-            <svg
-              className="w-3 h-3 text-blue-500"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 6v6l4 2" />
-            </svg>
-            {message.tokensUsed} tokens
-          </div>
-        )}
+        </div>
+
+        {/* Actions (Outside Bubble) */}
+        <div className={`flex items-center px-1 w-full ${isUser ? 'justify-end' : 'justify-between'}`}>
+          {!isUser && typeof message.tokensUsed === 'number' && message.tokensUsed > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">
+              <svg
+                className="w-3 h-3 text-blue-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+              {message.tokensUsed} tokens
+            </div>
+          )}
+
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleCopy();
+            }}
+            className="flex items-center gap-1.5 text-[10px] font-medium transition-colors cursor-pointer text-slate-400 hover:text-blue-600 relative z-10"
+            title="Copy message"
+          >
+            {isCopied ? (
+              <><i className="fa-solid fa-check text-emerald-500"></i> Copied</>
+            ) : (
+              <><i className="fa-regular fa-copy"></i> Copy</>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   )
