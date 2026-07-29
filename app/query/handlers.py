@@ -327,16 +327,12 @@ class UnavailableTelemetry:
 
     # What the question asked for -> what we would need to start collecting.
     _SUBJECTS = (
-        ("firmware", "firmware versions"),
         ("uptime", "per-device uptime history"),
         ("disk utilization", "S-Vault disk usage"),
         ("s-vault", "S-Vault contents"),
         ("svault", "S-Vault contents"),
         ("ingestion rate", "message ingestion rate"),
-        ("serial number", "device serial numbers"),
         ("patch level", "OS patch levels"),
-        ("last seen online", "per-device last-seen timestamps"),
-        ("model number", "device model numbers"),
     )
 
     async def can_handle(self, intent: ExtractedIntent) -> bool:

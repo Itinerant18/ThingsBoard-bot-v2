@@ -227,7 +227,8 @@ async def test_the_new_openers_do_not_capture_existing_questions(
         ("Which CCTV channels are currently disconnected?", "cctv_fleet"),
         ("Are there any Gateway system errors right now?", "fleet_health"),
         # Telemetry the fleet does not publish — say so instead of demanding an id.
-        ("What is the current firmware version of all Gateway devices?", "unavailable_telemetry"),
+        # NOT firmware: rock.firmwareVersion is published and derived.py reads it.
+        ("What is the current uptime of all Gateway devices?", "unavailable_telemetry"),
         ("What is the current uptime of all CCTV devices?", "unavailable_telemetry"),
         ("What is the current disk utilization across all S-Vault nodes?", "unavailable_telemetry"),
         # Not telemetry at all.
@@ -259,3 +260,21 @@ async def test_the_fleet_fallback_does_not_capture_working_questions(
     question: str, expected: str
 ) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the device firmware version?",
+        "What is the device serial number?",
+        "What is the device model number?",
+    ],
+)
+async def test_data_the_fleet_publishes_is_not_declined(question: str) -> None:
+    """The first honest-decline pass over-reached: firmware, serial and model were
+    added to the not-held list without checking, but derived.py reads
+    rock.firmwareVersion / rock.serialNumber / rock.model. Declining data we hold
+    misleads an operator exactly as much as inventing data we do not."""
+    got = await KeywordIntentExtractor().extract(question)
+    assert got.name != "unavailable_telemetry"
+    assert got.name == "device_hardware"

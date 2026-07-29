@@ -173,8 +173,13 @@ _NOT_HELD_RE = re.compile(
     r"\bstand for\b|\bwhat does \w+ mean\b|\bwhat should i do\b|\bprocedure for\b"
     r"|\bhow do i (?:fix|reset|reconnect|escalate)\b|\btrend over\b|\btrend of\b"
     r"|\bcompared to yesterday\b|\bover (?:the )?(?:past|last) \d+ days?\b"
-    r"|\bfirmware\b|\buptime\b|\bdisk utilization\b|\bs-?vault\b|\bingestion rate\b"
-    r"|\bserial number\b|\bpatch level\b|\blast seen online\b|\bmodel number\b"
+    # NOT firmware / serial / model: the audit showed those being declined while
+    # derived.py reads rock.firmwareVersion, rock.serialNumber and rock.model, and
+    # cctv_device_info already answers them for a named branch. Declining data the
+    # fleet actually publishes is the same failure as inventing data it does not —
+    # both leave the operator with a wrong picture.
+    r"|\buptime\b|\bdisk utilization\b|\bs-?vault\b|\bingestion rate\b"
+    r"|\bpatch level\b"
 )
 
 # Fleet-shaped phrasing. A metric question carrying one of these and naming no branch
@@ -434,7 +439,13 @@ class KeywordIntentExtractor:
             intent = "cctv_hdd_info"
         elif cctv:
             intent = "cctv_status"
-        elif has("cpu", "memory", "disk", "temperature", "hardware", "firmware"):
+        elif has(
+            "cpu", "memory", "disk", "temperature", "hardware", "firmware",
+            # rock.serialNumber / rock.model / rock.manufacturer are published and
+            # read by derived.py; declining them sent the operator away from data we
+            # hold.
+            "serial number", "model number", "manufacturer", "hardware version",
+        ):
             intent = "device_hardware"
         elif has("subsystem", "ias", "fas", "bas", "access control", "time lock", "fault"):
             intent = "subsystem_status"
