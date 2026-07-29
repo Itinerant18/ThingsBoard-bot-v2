@@ -140,7 +140,7 @@ def _area_of(first: str, last: str, level: str | None) -> str | None:
     if level is None:
         # Branch account: the name itself is the area, minus the bank word.
         joined = " ".join(part for part in (first, last) if part)
-        stripped = re.sub(r"^\s*(?:sbi|boi|bob|canara|pnb|cb)\b", "", joined, flags=re.I)
+        stripped = re.sub(r"^\s*(?:sbi|boi|bob|canara|pnb|cb)\b", "", joined, flags=re.IGNORECASE)
         return stripped.strip() or None
     candidates = [part for part in (last, first) if part]
     for candidate in candidates:
@@ -148,9 +148,9 @@ def _area_of(first: str, last: str, level: str | None) -> str | None:
             rf"\b(?:{'|'.join(re.escape(k) for k in _LEVEL_BANDS)})\b",
             " ",
             candidate,
-            flags=re.I,
+            flags=re.IGNORECASE,
         )
-        cleaned = re.sub(r"\b(?:sbi|boi|bob|canara|pnb|cb)\b", " ", cleaned, flags=re.I)
+        cleaned = re.sub(r"\b(?:sbi|boi|bob|canara|pnb|cb)\b", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if cleaned:
             return cleaned
@@ -344,8 +344,10 @@ def format_user_answer(
             )
         if not matched:
             return (
-                "Name the zone, region or Head Office and I will give that account's email. "
-                f"{len(users)} users are visible in {scope_label}.",
+                (
+                    "Name the zone, region or Head Office and I will give that "
+                    f"account's email. {len(users)} users are visible in {scope_label}."
+                ),
                 structured,
             )
         return (
@@ -389,8 +391,10 @@ def format_user_answer(
 
     if "how many" in text or "count" in text or "total" in text:
         return (
-            f"{len(users)} users are registered in {scope_label} ({level_breakdown}). "
-            f"{len(users) - len(disabled)} are active.",
+            (
+                f"{len(users)} users are registered in {scope_label} "
+                f"({level_breakdown}). {len(users) - len(disabled)} are active."
+            ),
             structured,
         )
 

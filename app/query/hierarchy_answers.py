@@ -227,9 +227,12 @@ def find_area(tree: ScopedTree, question: str, pool: Sequence[Node] | None = Non
     best: Node | None = None
     for node in pool if pool is not None else tree.nodes.values():
         name = _norm(node.display_name)
-        if name and re.search(rf"\b{re.escape(name)}\b", asked):
-            if best is None or len(name) > len(_norm(best.display_name)):
-                best = node
+        if (
+            name
+            and re.search(rf"\b{re.escape(name)}\b", asked)
+            and (best is None or len(name) > len(_norm(best.display_name)))
+        ):
+            best = node
     return best
 
 
@@ -260,16 +263,20 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
         area = find_area(tree, question)
         if area is None:
             return (
-                "No branch, zone or region matching that name is visible in your "
-                "authorized scope.",
+                (
+                    "No branch, zone or region matching that name is visible in "
+                    "your authorized scope."
+                ),
                 structured,
             )
         leaves = tree.descendant_leaves(area.node_id)
         if area.is_leaf:
             return f"Yes — {area.display_name} is in your authorized scope.", structured
         return (
-            f"Yes — {area.display_name} is in your authorized scope, with "
-            f"{len(leaves)} branch(es): {_names(leaves)}.",
+            (
+                f"Yes — {area.display_name} is in your authorized scope, with "
+                f"{len(leaves)} branch(es): {_names(leaves)}."
+            ),
             structured,
         )
 
@@ -317,15 +324,19 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
     if "most branches" in text or "most branch" in text:
         if not top:
             return (
-                f"Your authorized scope has no grouping level above its "
-                f"{len(branches)} branch(es).",
+                (
+                    "Your authorized scope has no grouping level above its "
+                    f"{len(branches)} branch(es)."
+                ),
                 structured,
             )
         ranked = sorted(top, key=lambda n: len(tree.descendant_leaves(n.node_id)), reverse=True)
         leader = ranked[0]
         return (
-            f"{leader.display_name} has the most branches under monitoring: "
-            f"{len(tree.descendant_leaves(leader.node_id))}.",
+            (
+                f"{leader.display_name} has the most branches under monitoring: "
+                f"{len(tree.descendant_leaves(leader.node_id))}."
+            ),
             structured,
         )
 
