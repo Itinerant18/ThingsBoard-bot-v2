@@ -303,8 +303,10 @@ def test_open_and_resolved_words_do_not_collide_as_substrings() -> None:
     unresolved = answer("Are there any active unresolved alarms?")
     assert "open for" in unresolved and "TAT" not in unresolved
 
+    # 4 resolved vs 3 active in the fixture, so the count itself proves which set
+    # was selected — and "how many" is now answered with a number, not a dump.
     currently_resolved = answer("How many alarms are currently resolved?")
-    assert "TAT" in currently_resolved and "no end time" not in currently_resolved
+    assert currently_resolved.startswith("4 matching alarm(s)")
 
     # A time adverb alone still means open.
     assert "no end time" in answer("What alarms are open currently?")
@@ -432,3 +434,47 @@ def test_a_health_question_is_never_answered_yes_while_listing_alarms() -> None:
 def test_an_existence_question_still_answers_yes() -> None:
     """The fix must not mute the affirmative where it is correct."""
     assert answer("Is there any camera tamper alarm currently active?").startswith("Yes.")
+
+
+# --------------------------------------------------------------------------- #
+# Aggregation: counts, group-by, and naming a winner
+#
+# One handler answered nearly every alarm question with the same twenty-row dump —
+# real data, but never the number or the name that was asked for. 121 of the 769
+# live answers were that dump.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_count_question_is_answered_with_a_number() -> None:
+    assert answer("How many open alerts are there right now?").startswith("3 matching")
+
+
+def test_a_named_severity_narrows_the_population() -> None:
+    """"How many major severity alarms are active?" counted every active alarm —
+    the right list, the wrong population."""
+    assert answer("How many major severity alarms are currently active?").startswith("1 ")
+    assert answer("How many warning severity alarms are currently active?").startswith("2 ")
+
+
+def test_a_superlative_names_one_winner_not_a_list() -> None:
+    reply = answer("Which zone has the most active alerts right now?")
+    assert reply.startswith("ZO HOWRAH has the most")
+    assert "3 alarm(s)" in reply
+
+
+def test_least_is_not_answered_with_the_most() -> None:
+    reply = answer("Which branch has the fewest alarms?")
+    assert reply.startswith("DOBSON has the fewest")
+
+
+def test_group_by_returns_a_breakdown_ranked_high_to_low() -> None:
+    reply = answer("What is the alarm count by branch?")
+    assert reply.startswith("Alarms by branch: BALLYBAZAR 3")
+    assert "DOBSON 1" in reply
+
+
+def test_a_plain_which_question_still_lists_rather_than_ranking() -> None:
+    """Only a superlative wants one name; "which branches have alarms" wants the set."""
+    reply = answer("Which branches have unresolved alarms in the displayed data?")
+    assert "BALLYBAZAR" in reply and "DOBSON" in reply
+    assert "has the most" not in reply

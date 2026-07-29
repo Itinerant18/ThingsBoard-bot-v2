@@ -208,6 +208,74 @@ def _structured(alarms: list[AlarmRecord]) -> list[dict[str, Any]]:
 # Word-bounded on purpose. Substring matching collides in both directions here:
 # "unresolved" contains "resolved", and "currently resolved" contains "current".
 # Either collision answers with the opposite set of alarms.
+
+
+# The dimensions an alarm can be grouped by. Every one is already carried on
+# AlarmRecord; only the grouping was missing.
+_DIMENSIONS: tuple[tuple[str, str], ...] = (
+    (r"\bper branch\b|\bby branch\b|\beach branch\b|\bwhich branch\b", "branch"),
+    (r"\bper zone\b|\bby zone\b|\beach zone\b|\bwhich zone\b", "zone"),
+    (
+        (
+            r"\bper (?:region|fgmo|nbg)\b|\bby (?:region|fgmo|nbg)\b"
+            r"|\bwhich (?:region|fgmo|nbg)\b"
+        ),
+        "region",
+    ),
+    (
+        (
+            r"\bby severity\b|\bper severity\b|\bseverity breakdown\b"
+            r"|\bseverity distribution\b"
+        ),
+        "severity",
+    ),
+    (r"\bby type\b|\bper type\b|\btype breakdown\b|\bby alarm type\b", "alarm_type"),
+)
+
+_SEVERITIES = ("critical", "major", "minor", "warning", "indeterminate")
+
+
+def _group_dimension(text: str) -> str | None:
+    for pattern, name in _DIMENSIONS:
+        if re.search(pattern, text):
+            return name
+    return None
+
+
+def _wants_ranking(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bmost\b|\bleast\b|\bfewest\b|\bhighest\b|\blowest\b|\bworst\b|\btop \d",
+            text,
+        )
+    )
+
+
+def _wants_a_count(text: str) -> bool:
+    return bool(
+        re.search(r"\bhow many\b|\bcount of\b|\bnumber of\b|\btotal (?:number|count)\b", text)
+    )
+
+
+def _group_alarms(alarms: list["AlarmRecord"], dimension: str) -> dict[str, list["AlarmRecord"]]:
+    groups: dict[str, list[AlarmRecord]] = {}
+    for alarm in alarms:
+        key = getattr(alarm, dimension, None)
+        if key:
+            groups.setdefault(str(key), []).append(alarm)
+    return groups
+
+
+def _by_named_severity(alarms: list["AlarmRecord"], text: str) -> list["AlarmRecord"]:
+    """Narrow to a severity the question names.
+
+    "How many major severity alarms are currently active?" was answered with every
+    active alarm regardless of severity — the right list, the wrong population.
+    """
+    wanted = {s.upper() for s in _SEVERITIES if re.search(rf"\b{s}\b", text)}
+    return [a for a in alarms if a.severity in wanted] if wanted else alarms
+
+
 _OPEN_RE = re.compile(r"\b(?:unresolved|active|open|current(?:ly)?|right now|ongoing)\b")
 _RESOLVED_RE = re.compile(r"\b(?:resolved|cleared)\b")
 _UNRESOLVED_RE = re.compile(r"\bunresolved\b")
@@ -267,6 +335,7 @@ def format_alarm_answer(
     else:
         selected = alarms
     selected = [alarm for alarm in selected if _matches_type(alarm, text)]
+    selected = _by_named_severity(selected, text)
 
     if "severity breakdown" in text:
         counts = Counter(alarm.severity for alarm in active)
@@ -279,7 +348,14 @@ def format_alarm_answer(
         )
         return answer, {"severity": dict(counts), "alarms": _structured(active)}
 
-    if "which zone" in text and ("unresolved" in text or "active" in text):
+    # A superlative wants ONE name, not the whole set. "Which zone has the most
+    # active alerts?" was answered by listing every zone that had any, which is
+    # the shape failure the audit called out. Defer those to the ranking path.
+    if (
+        "which zone" in text
+        and ("unresolved" in text or "active" in text)
+        and not _wants_ranking(text)
+    ):
         locations = sorted(
             {
                 f"{alarm.zone} ({alarm.region})" if alarm.region else str(alarm.zone)
@@ -373,7 +449,11 @@ def format_alarm_answer(
             {"alarms": _structured(active)},
         )
 
-    if "which branches" in text and ("unresolved" in text or "active alarm" in text):
+    if (
+        "which branches" in text
+        and ("unresolved" in text or "active alarm" in text)
+        and not _wants_ranking(text)
+    ):
         branches = sorted({alarm.branch for alarm in active})
         answer = (
             "Branches with active unresolved alarms: " + ", ".join(branches) + "."
@@ -386,6 +466,42 @@ def format_alarm_answer(
         types = sorted({alarm.alarm_type for alarm in selected})
         answer = "Visible alarm types: " + ", ".join(types) + "." if types else "No alarm types are visible."
         return answer, {"types": types, "alarms": _structured(selected)}
+
+    # AGGREGATION. Placed after the specific handlers above so none of them is
+    # shadowed, and before the listing fallback below — which is where "how many
+    # major alarms are active?" and "which zone has the most?" were landing. Both
+    # got the same twenty-row dump: real data, never the number or the name asked
+    # for. This was the single largest shape failure in the corpus.
+    dimension = _group_dimension(text)
+    if dimension is not None:
+        groups = _group_alarms(selected, dimension)
+        if not groups:
+            return (
+                f"No matching alarm carries a {dimension} right now.",
+                {"alarms": _structured(selected)},
+            )
+        group_counts = {name: len(rows) for name, rows in groups.items()}
+        if _wants_ranking(text):
+            least = re.search(r"\bleast\b|\bfewest\b|\blowest\b", text) is not None
+            winner, members = (min if least else max)(
+                groups.items(), key=lambda kv: len(kv[1])
+            )
+            answer = f"{winner} has the {'fewest' if least else 'most'}: {len(members)} alarm(s)"
+            answer += f", out of {len(groups)} with any." if len(groups) > 1 else "."
+            return answer, {"grouped": group_counts, "alarms": _structured(members)}
+        ranked_groups = sorted(group_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return (
+            f"Alarms by {dimension}: "
+            + ", ".join(f"{name} {n}" for name, n in ranked_groups[:20])
+            + ".",
+            {"grouped": dict(ranked_groups), "alarms": _structured(selected)},
+        )
+
+    if _wants_a_count(text):
+        return (
+            f"{len(selected)} matching alarm(s).",
+            {"count": len(selected), "alarms": _structured(selected)},
+        )
 
     if not selected:
         if "last hour" in text:
