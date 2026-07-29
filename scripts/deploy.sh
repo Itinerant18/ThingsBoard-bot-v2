@@ -19,6 +19,22 @@ echo "==> deploying $(git log --oneline -1)"
 # Keep a way back. On the very first run there is no image yet, hence the || true.
 docker tag thingsboard-bot-v2:latest thingsboard-bot-v2:rollback 2>/dev/null || true
 
+# Reclaim BEFORE building, not after. This prune used to sit below the build with a
+# comment saying it existed to stop deploys failing on a full disk — but the disk
+# fills DURING the build, so it never got the chance. Deploy abd5ffb died with
+# "no space left on device" while exporting the image layer, with lint, types and
+# tests all green: an infrastructure failure wearing a code failure's clothes.
+free_mb() { df -Pm / | awk 'NR==2 {print $4}'; }
+echo "==> free before prune: $(free_mb) MB"
+docker builder prune -f --keep-storage 2GB >/dev/null 2>&1 || true
+docker image prune -f >/dev/null 2>&1 || true
+# Still tight? Drop the whole build cache — a slow deploy beats a failed one.
+if [ "$(free_mb)" -lt 4000 ]; then
+  echo "==> under 4 GB free, dropping the entire build cache"
+  docker builder prune -af >/dev/null 2>&1 || true
+fi
+echo "==> free after prune:  $(free_mb) MB"
+
 $COMPOSE up -d --build
 
 # Health gate. The app needs a moment to bind, so poll rather than checking once.
@@ -31,11 +47,6 @@ except Exception:
     sys.exit(1)
 " 2>/dev/null
 }
-
-# The image now has a node build stage, so every deploy adds build-cache layers on a
-# host with ~2.5 GB free. Trim the cache but keep a working set, otherwise a deploy
-# eventually fails on a full disk rather than on anything to do with the code.
-docker builder prune -f --keep-storage 2GB >/dev/null 2>&1 || true
 
 for attempt in $(seq 1 30); do
   if healthy; then
