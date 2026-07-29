@@ -30,8 +30,21 @@ import re
 _CREDENTIAL_RE = re.compile(
     r"\bpasswords?\b|\bpasswd\b|\bpassphrase\b|\bcredentials?\b|\bsecrets?\b"
     r"|\bapi[- ]?keys?\b|\baccess tokens?\b|\bbearer\b|\bprivate keys?\b"
-    r"|\bcertificates?\b|\bpem\b|\bssh keys?\b|\blogin details?\b"
-    r"|\bs-?vault (?:contents?|configs?|configurations?)\b",
+    r"|\bcertificates?\b|\bpem\b|\bssh keys?\b|\blogin details?\b",
+    re.IGNORECASE,
+)
+
+# Asking what a secret store HOLDS is asking for its contents, however politely it
+# is phrased. This is refused rather than declined on purpose: "I do not hold that"
+# is a statement about today's integrations and would quietly become a lookup the
+# day S-Vault is wired up. "I will not" survives that change.
+# Capacity, uptime and bandwidth are NOT contents — those stay ordinary questions
+# that this build simply cannot answer yet.
+_VAULT_CONTENTS_RE = re.compile(
+    r"\b(?:stored|store|kept|holds?|contents?|files?|configs?|configurations?"
+    r"|entries|records)\b[^?]{0,30}\b(?:s-?)?vault\b"
+    r"|\b(?:s-?)?vault\b[^?]{0,30}\b(?:contents?|files?|configs?|configurations?"
+    r"|stored|holds?|entries|records)\b",
     re.IGNORECASE,
 )
 
@@ -44,7 +57,7 @@ REFUSAL = (
 
 
 def asks_for_credentials(question: str) -> bool:
-    return bool(_CREDENTIAL_RE.search(question))
+    return bool(_CREDENTIAL_RE.search(question) or _VAULT_CONTENTS_RE.search(question))
 
 
 def mask_actor(display: str, *, in_scope: bool) -> str:

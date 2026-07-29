@@ -79,3 +79,35 @@ def test_someone_in_scope_is_not_masked() -> None:
 
 def test_a_name_without_an_address_is_left_alone() -> None:
     assert mask_actor("System", in_scope=False) == "System"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is stored in the S-Vault?",
+        "What configuration files are in S-Vault?",
+        "Show me the S-Vault configurations",
+        "What entries does the vault hold?",
+    ],
+)
+def test_asking_what_a_secret_store_holds_is_refused_not_declined(question: str) -> None:
+    """Refused, not declined, on purpose. "I do not hold that" is a statement about
+    today's integrations and would quietly become a lookup the day S-Vault is wired
+    up. "I will not" survives that change."""
+    assert asks_for_credentials(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How much storage is currently being used in S-Vault?",
+        "Which S-Vault instances are currently online?",
+        "What is the current disk utilization across all S-Vault nodes?",
+        "Which S-Vault instances are approaching storage capacity limits?",
+        "What is the current network bandwidth usage for S-Vault streaming?",
+    ],
+)
+def test_vault_capacity_and_uptime_are_not_secrets(question: str) -> None:
+    """Capacity, uptime and bandwidth reveal nothing stored. Refusing them would be
+    security theatre that hides a real operational gap behind a policy word."""
+    assert asks_for_credentials(question) is False
