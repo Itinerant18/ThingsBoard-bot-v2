@@ -213,6 +213,17 @@ _RESOLVED_RE = re.compile(r"\b(?:resolved|cleared)\b")
 _UNRESOLVED_RE = re.compile(r"\bunresolved\b")
 
 
+_HEALTH_QUESTION_RE = re.compile(
+    r"\b(?:is|are)\b[^?]*\b(?:healthy|health|ok|okay|fine|working|operational|normal)\b"
+)
+
+
+def _asks_whether_healthy(text: str) -> bool:
+    """True for "is X healthy?" — a question the alarm lister must never answer "Yes"
+    to merely because it found alarms to list."""
+    return bool(_HEALTH_QUESTION_RE.search(text))
+
+
 def _asks_for_open(text: str) -> bool:
     """True when the question is about alarms that are still open.
 
@@ -391,6 +402,19 @@ def format_alarm_answer(
             answer += f" The latest matching resolved alarm was {_alarm_line(latest, current)}."
         return answer, {"alarms": _structured(matching_resolved[:1])}
 
+    # SAFETY: "Yes" here affirms that matching alarms EXIST. On a question phrased
+    # "Is the Burglar Alarm System healthy?" that same word reads as "yes, healthy"
+    # — while the sentence goes on to list an active intrusion alarm. Answering yes
+    # to a health question about a bank's intrusion system, on evidence that says
+    # the opposite, is the worst failure this module can produce.
+    if _asks_whether_healthy(text):
+        count = len(selected)
+        return (
+            f"No — {count} alarm(s) match, so this is not clear: "
+            + "; ".join(_alarm_line(alarm, current) for alarm in selected[:10])
+            + ".",
+            {"alarms": _structured(selected), "healthy": False},
+        )
     prefix = "Yes. " if text.startswith(("is ", "are ", "do ")) else ""
     return (
         prefix + "; ".join(_alarm_line(alarm, current) for alarm in selected[:10]) + ".",

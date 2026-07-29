@@ -169,3 +169,29 @@ async def test_single_branch_cctv_questions_still_route_per_device(
     question: str, expected: str
 ) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+def test_a_corrupt_capacity_cannot_swamp_the_fleet_total() -> None:
+    """Production printed "2987145560790.61 TB of installed recording capacity".
+    One NVR reporting a corrupt figure dominated the sum, and "consumed" was then
+    derived from that same corrupt total and printed to two decimal places."""
+    broken = _rock({"1": 90}, model="DS-BROKEN")
+    broken["capacity"] = 2987145560768.0
+    fleet = aggregate_cctv({**FLEET, "d9": _branch("CORRUPTED", broken)})
+
+    assert fleet.storage_tb < 500  # the four credible NVRs only
+    assert [b.branch for b in fleet.implausible_storage] == ["CORRUPTED"]
+
+    reply = format_cctv_fleet(fleet, "What is the current storage consumption?")
+    assert "2987145560790" not in reply
+    assert "implausible capacity" in reply
+    assert "CORRUPTED" in reply
+
+
+def test_every_credible_capacity_rejected_says_so_rather_than_printing_zero() -> None:
+    broken = _rock({"1": 90})
+    broken["capacity"] = 9e12
+    fleet = aggregate_cctv({"d1": _branch("ONLY", broken)})
+    reply = format_cctv_fleet(fleet, "storage consumption")
+    assert "credible recording capacity" in reply.lower()
+    assert "implausible" in reply.lower()

@@ -61,7 +61,9 @@ def test_formats_category_and_overall_faq_answers() -> None:
     assert "1 faulty" in cctv
 
     overall = format_fleet_health(summary, "What is the real-time health status?")
-    assert "Of 4 monitored devices" in overall
+    # "monitored devices" read as a branch count and contradicted the overview's
+    # "N device(s) in your authorized scope"; the label now says what it counts.
+    assert "2 branches" in overall and "4 monitored modules" in overall
     assert "2 are healthy (50.0%)" in overall
 
     acs = format_fleet_health(summary, "Are any ACS devices deployed?", "accessControl")

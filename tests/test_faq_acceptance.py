@@ -413,3 +413,22 @@ def test_attention_answer_lists_every_priority_item() -> None:
     assert "2 offline Gateway" in reply
     assert "1 offline TLS" in reply
     assert "1 reported open alert" in reply
+
+
+# --------------------------------------------------------------------------- #
+# Defects found by grading 769 live answers
+# --------------------------------------------------------------------------- #
+
+
+def test_a_health_question_is_never_answered_yes_while_listing_alarms() -> None:
+    """The worst defect in the corpus. "Yes" affirmed that alarms EXIST, but on
+    "Is the Burglar Alarm System healthy?" it read as "yes, healthy" — while the
+    same sentence listed an open intrusion alarm at a bank."""
+    reply = answer("Is the Burglar Alarm System healthy?")
+    assert not reply.startswith("Yes")
+    assert "No" in reply[:4]
+
+
+def test_an_existence_question_still_answers_yes() -> None:
+    """The fix must not mute the affirmative where it is correct."""
+    assert answer("Is there any camera tamper alarm currently active?").startswith("Yes.")

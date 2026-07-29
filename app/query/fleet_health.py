@@ -272,7 +272,12 @@ def format_fleet_health(
         return "No current device health data is available in your authorized scope."
     pct = summary.health_percentage or 0.0
     answer = (
-        f"Of {summary.total} monitored devices, {summary.healthy} are healthy ({pct:.1f}%), "
+        # "monitored devices" read as the branch count and contradicted the overview's
+        # "98 device(s) in your authorized scope" in the same session. Both numbers are
+        # right about different things: 98 branches, each contributing several modules.
+        # Say which is being counted rather than leaving the operator to reconcile them.
+        f"Across {len(summary.branches)} branches, {summary.total} monitored modules "
+        f"(gateway, CCTV, IAS, BAS, FAS, TLS, ACS): {summary.healthy} are healthy ({pct:.1f}%), "
         f"{summary.faulty} {_verb(summary.faulty)} faulty, and "
         f"{summary.offline} {_verb(summary.offline)} offline"
     )

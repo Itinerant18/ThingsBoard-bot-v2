@@ -74,16 +74,27 @@ def gateway_intent(device_id: str | None) -> ExtractedIntent:
 # --- security gates ----------------------------------------------------------
 
 
-async def test_missing_device_id_asks_for_one() -> None:
+async def test_missing_device_id_asks_for_a_branch_and_offers_fleet_answers() -> None:
+    """The old reply demanded a device UUID, which no operator types, and
+    dead-ended: 77 real questions were fleet-wide and had a fleet answer
+    available, so the reply now names that route instead."""
     handler = make_handler(ScopedBranches([], []), FakeClient())
     answer = await handler.handle(gateway_intent(None), make_ctx())
-    assert "Name a device" in answer.text
+    assert "needs a branch" in answer.text
+    assert "fleet-wide" in answer.text
 
 
-async def test_invalid_uuid_rejected() -> None:
+async def test_a_scraped_word_is_not_echoed_back_as_a_rejected_id() -> None:
+    """The extractor scrapes device_id from a word after "device"/"asset", so
+    "What NVR models are deployed?" arrived here as device_id="models" and was
+    answered "'models' is not a valid device id." — a word from the user's own
+    sentence handed back as a bad identifier, on 13 real questions. A non-UUID
+    never came from the caller naming a device, so it is ignored."""
     handler = make_handler(ScopedBranches([], []), FakeClient())
-    answer = await handler.handle(gateway_intent("not-a-uuid"), make_ctx())
-    assert "not a valid device id" in answer.text
+    answer = await handler.handle(gateway_intent("models"), make_ctx())
+    assert "not a valid device id" not in answer.text
+    assert "models" not in answer.text
+    assert "needs a branch" in answer.text
 
 
 async def test_no_prefix_denied() -> None:

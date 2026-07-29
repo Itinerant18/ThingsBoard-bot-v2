@@ -17,6 +17,12 @@ from typing import Any
 
 from app.query import cctv, derived
 
+# A branch NVR is a handful of disks. The largest in this fleet is 21.84 TB across
+# four slots, so a three-digit figure is already generous headroom; anything past it
+# is a corrupt reading, not a data centre. Bounding per DEVICE rather than on the
+# total is deliberate — one bad row must not be able to swamp 97 good ones.
+MAX_CREDIBLE_NVR_TB = 500.0
+
 
 @dataclass
 class BranchRecording:
@@ -89,12 +95,37 @@ class FleetCctv:
         return None if total == 0 else self.compliant * 100 / total
 
     @property
+    def credible_storage(self) -> list[BranchRecording]:
+        """Branches whose reported capacity is physically possible.
+
+        Live output before this filter: "2987145560790.61 TB of installed recording
+        capacity". A single NVR was reporting a corrupt capacity and one bad reading
+        dominated the sum, so the whole answer became nonsense while still being
+        printed to two decimal places as if measured.
+        """
+        return [
+            b
+            for b in self.branches
+            if b.storage_tb is not None and 0 < b.storage_tb <= MAX_CREDIBLE_NVR_TB
+        ]
+
+    @property
+    def implausible_storage(self) -> list[BranchRecording]:
+        return [
+            b
+            for b in self.branches
+            if b.storage_tb is not None and b.storage_tb > MAX_CREDIBLE_NVR_TB
+        ]
+
+    @property
     def storage_tb(self) -> float:
-        return sum(b.storage_tb or 0.0 for b in self.branches)
+        return sum(b.storage_tb or 0.0 for b in self.credible_storage)
 
     @property
     def free_tb(self) -> float:
-        return sum(b.free_tb or 0.0 for b in self.branches)
+        # Only from the same branches the total came from, or "consumed" is a
+        # subtraction across two different populations.
+        return sum(b.free_tb or 0.0 for b in self.credible_storage)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,12 +252,31 @@ def format_cctv_fleet(fleet: FleetCctv, question: str) -> str:
         )
 
     if "storage" in text or "consumption" in text:
+        credible = fleet.credible_storage
+        rejected = fleet.implausible_storage
+        if not credible:
+            return (
+                "No branch is reporting a credible recording capacity right now"
+                + (
+                    f"; {len(rejected)} NVR(s) reported an implausible figure."
+                    if rejected
+                    else "."
+                )
+            )
         used = fleet.storage_tb - fleet.free_tb
-        return (
-            f"Across {len(fleet.branches)} scoped branches the NVRs report "
-            f"{fleet.storage_tb:.2f} TB of installed recording capacity, of which "
-            f"{used:.2f} TB is consumed and {fleet.free_tb:.2f} TB free." + _silent_suffix(fleet)
+        answer = (
+            f"Across {len(credible)} branches reporting credible capacity, the NVRs "
+            f"hold {fleet.storage_tb:.2f} TB, of which {used:.2f} TB is consumed and "
+            f"{fleet.free_tb:.2f} TB free."
         )
+        if rejected:
+            # Named, not silently dropped: a branch whose NVR is talking nonsense is
+            # itself worth chasing.
+            answer += (
+                f" {len(rejected)} NVR(s) reported an implausible capacity and are "
+                f"excluded ({_listing([b.branch for b in rejected], 5)})."
+            )
+        return answer + _silent_suffix(fleet)
 
     if "model" in text or "inventory" in text or "vendor" in text or "make" in text:
         models = Counter(

@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 from app.auth.scope_resolver import resolved_scope
 from app.auth.tb_acl import PermissionCheckUnavailable, SessionExpired, caller_identity
-from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
+from app.clients.thingsboard import UserAwareThingsBoardClient
 from app.config import Settings
 from app.hierarchy.scope import ScopedBranches
 from app.normalization import build_snapshot
@@ -715,14 +715,19 @@ class MetricHandler:
 
     async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
         device_id = intent.device_id
+        # The extractor scrapes device_id from `(?:device|asset)\s+(\w+)`, so ordinary
+        # question words arrive here as ids: "What NVR models are deployed?" produced
+        # "'models' is not a valid device id." Echoing a word out of the user's own
+        # sentence back at them as a rejected identifier is nonsense, and it happened
+        # on 13 real questions. A non-UUID never came from the caller naming a device.
+        if device_id and not _is_uuid(device_id):
+            device_id = None
         if not device_id:
             return Answer(
-                "Name a device to check — for example, 'battery voltage of device <uuid>'."
+                "That question needs a branch — name one (for example 'battery voltage "
+                "of Liluah') and I will answer for it. For a fleet-wide view, ask about "
+                "device health, CCTV recording, or alarms across all branches."
             )
-        try:
-            require_uuid(device_id, "device_id")
-        except ValueError:
-            return Answer(f"'{device_id}' is not a valid device id.")
         if not ctx.tenant.prefix:
             return Answer("Your token is not mapped to a customer, so I cannot scope device data.")
 
@@ -918,10 +923,32 @@ def _format_metric(intent: ExtractedIntent, snap: BranchSnapshot, device_id: str
                 {"cctv_state": c.state.value},
                 src,
             )
+        # Live cameras outrank a stale status attribute. Production printed
+        # "CCTV status is NOT_INSTALLED; 15/16 cameras online." — two halves of one
+        # sentence contradicting each other, leaving the operator to guess which to
+        # believe. The camera tally is direct evidence; cctv_sts is a cached field
+        # that goes stale, so when they disagree the evidence wins and the stale
+        # status is reported as what it is rather than as fact.
+        online = c.online_camera_count or 0
+        contradicts = online > 0 and c.state.value in ("NOT_INSTALLED", "UNKNOWN")
+        if contradicts:
+            text = (
+                f"{online}/{c.camera_count} cameras are online, so CCTV is present and "
+                f"reporting — though its status attribute still reads "
+                f"{c.state.value}, which is stale."
+            )
+        else:
+            text = (
+                f"CCTV status is {c.state.value}; {online}/{c.camera_count} cameras online."
+            )
         return Answer(
-            f"CCTV status is {c.state.value}; {c.online_camera_count}/{c.camera_count} "
-            "cameras online.",
-            {"cctv_state": c.state.value, "online": c.online_camera_count, "total": c.camera_count},
+            text,
+            {
+                "cctv_state": c.state.value,
+                "online": c.online_camera_count,
+                "total": c.camera_count,
+                "status_contradicts_cameras": contradicts,
+            },
             src,
         )
 
