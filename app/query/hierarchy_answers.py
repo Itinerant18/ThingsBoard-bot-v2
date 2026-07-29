@@ -327,6 +327,44 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
             structured,
         )
 
+    # "Which ZO does BALLYBAZAR belong to?" — the reverse lookup. Operators ask this
+    # far more often than they ask for a listing, and the closure table already holds
+    # the answer, so it only ever needed asking for.
+    if re.search(r"\bbelongs? to\b|\bwhich .{0,24}\b(?:is|does) .+\b(?:in|under)\b", text):
+        area = find_area(tree, question)
+        if area is not None:
+            chain = [
+                tree.nodes[node_id]
+                for node_id in sorted(
+                    tree.ancestors.get(area.node_id, ()) if area.is_leaf else (),
+                    key=lambda nid: tree.nodes[nid].level if nid in tree.nodes else 0,
+                )
+                if node_id in tree.nodes
+            ]
+            if not area.is_leaf and area.parent_id in tree.nodes:
+                chain = [tree.nodes[area.parent_id]]
+            if chain:
+                structured["parents"] = [n.display_name for n in chain]
+                return (
+                    f"{area.display_name} sits under "
+                    + " → ".join(n.display_name for n in chain)
+                    + ".",
+                    structured,
+                )
+            return f"{area.display_name} is the top of your authorized scope.", structured
+
+    # "What are all the FGMO regions?" — a listing with no area named.
+    if re.search(r"\b(?:all|list|what are|which are|name)\b", text) and re.search(
+        r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b", text
+    ) and find_area(tree, question) is None:
+        wanted = top if re.search(r"\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b", text) else areas
+        if not wanted:
+            return "No grouping level is recorded in your authorized scope.", structured
+        return (
+            f"{len(wanted)} in your authorized scope: {_names(wanted)}.",
+            structured,
+        )
+
     area = find_area(tree, question)
     counting = "how many" in text or "count" in text
 

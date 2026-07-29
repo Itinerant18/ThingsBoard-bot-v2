@@ -480,3 +480,34 @@ async def test_omitting_the_authorized_set_keeps_the_old_behaviour() -> None:
 
     tree = await load_scoped_tree(_FakeDb(FULL), "BOI", ALL_LEAVES)
     assert len(tree.leaves) == 6
+
+
+# --------------------------------------------------------------------------- #
+# Reverse lookups and bare listings
+#
+# "Which ZO does BALLYBAZAR belong to" is what operators actually ask; the closure
+# table has held the answer all along and nothing routed to it.
+# --------------------------------------------------------------------------- #
+
+
+def test_which_area_a_branch_belongs_to() -> None:
+    reply = answer("Which ZO does BALLYBAZAR branch belong to?")
+    assert "ZO HOWRAH" in reply and "NBG EAST" in reply
+    assert "BARIPADA" not in reply
+
+
+def test_which_region_a_zone_belongs_to() -> None:
+    reply = answer("Which FGMO region does ZO NASIK belong to?")
+    assert "NBG West II" in reply
+
+
+def test_listing_the_regions_with_no_area_named() -> None:
+    reply = answer("What are all the FGMO regions in the system?")
+    assert "NBG EAST" in reply and "NBG ODISHA" in reply and "NBG West II" in reply
+    assert "MALDA" not in reply  # regions, not branches
+
+
+def test_a_reverse_lookup_respects_scope() -> None:
+    reply = answer("Which ZO does BARIPADA branch belong to?", HOWRAH_ONLY)
+    assert "BARIPADA" not in reply
+    assert "ODISHA" not in reply

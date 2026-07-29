@@ -250,7 +250,10 @@ def format_fleet_health(
         return "; ".join(
             f"{item.label}: {_count_phrase(item)}" for item in summary.categories.values()
         ) + "."
-    if "attention" in text:
+    if re.search(
+        r"\battention\b|\bbroken\b|\bwrong\b|\bissues?\b|\bproblems?\b", text
+    ):
+        # "show me what is broken" wants the priority list, not a health summary.
         issues = []
         for item in deployed:
             if item.faulty:

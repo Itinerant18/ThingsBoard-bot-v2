@@ -171,3 +171,46 @@ async def test_a_real_uuid_outside_scope_is_still_refused() -> None:
         raw_question="health of that device",
     )
     assert _requested_device(intent, ["0d1f8a10-2833-11f1-afd7-eb430bfb427f"]) == (None, True)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        # The openers an operator types instead of a well-formed query. Every one of
+        # these used to fall through to the generic device count.
+        ("Is everything working fine right now?", "fleet_health"),
+        ("Are there any issues I should know about?", "fleet_health"),
+        ("What needs my attention today?", "fleet_health"),
+        ("Show me what is broken", "fleet_health"),
+        ("Which devices need immediate attention?", "fleet_health"),
+        ("What is the most critical issue right now?", "alarm_detail"),
+        ("How long has the current issue been going on?", "alarm_detail"),
+        ("What happened in the system today?", "audit_log"),
+        # Hierarchy reverse lookups and listings.
+        ("Which ZO does BALLYBAZAR branch belong to?", "hierarchy_info"),
+        ("Which FGMO region does ZO NASIK belong to?", "hierarchy_info"),
+        ("What are all the FGMO regions in the BOI system?", "hierarchy_info"),
+        ("How many total branches are there across all FGMO regions?", "hierarchy_info"),
+        # A category count, which global_overview answered with the whole fleet.
+        ("How many FAS devices are there?", "fleet_health"),
+    ],
+)
+async def test_conversational_openers_and_reverse_lookups_route(
+    question: str, expected: str
+) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("battery voltage of liluah", "battery_voltage"),
+        ("Is the CCTV system healthy?", "fleet_health"),
+        ("Which branches are currently under the ODISHA zone?", "hierarchy_info"),
+        ("How many total users are registered?", "user_directory"),
+    ],
+)
+async def test_the_new_openers_do_not_capture_existing_questions(
+    question: str, expected: str
+) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == expected

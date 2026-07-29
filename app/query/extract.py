@@ -95,6 +95,12 @@ _HIERARCHY_RE = re.compile(
     r"|\b(?:under|within) the \w+(?: \w+)? (?:zone|region|nbg|fgmo)\b"
     r"|\bis there a[n]? .* (?:branch|zone|region)\b"
     r"|\bmost branches\b|\bhow many (?:zones?|regions?|branches)\b"
+    # Reverse lookup — "which ZO does BALLYBAZAR belong to". The closure table has
+    # held this answer all along; nothing routed to it.
+    r"|\bbelongs? to\b"
+    # A bare listing of the grouping levels, with no area named.
+    r"|\b(?:all|list|what are|which are|name)\b[^?]{0,40}\b(?:zones?|regions?|nbg|fgmo|circles?)\b"
+    r"|\btotal branch(?:es)? (?:count|across)\b|\bbranches across\b"
 )
 
 
@@ -115,6 +121,8 @@ _AUDIT_RE = re.compile(
     # "what actions were performed by X" is a question about the trail, not the
     # directory — it says "user" but wants activity.
     r"|\bactions? (?:were |was )?performed\b|\bperformed by\b"
+    # Plain-language forms of "show me the audit trail".
+    r"|\bwhat happened\b|\bwhat has happened\b|\brecent activity\b"
 )
 _USER_RE = re.compile(r"\buser|\blogin|\blogged in|\baccount(s)?\b|\brole(s)?\b|\bpermission")
 # "device user" is not a person, and a role question about MODULES is a config question.
@@ -140,6 +148,18 @@ _FLEET_SCOPE = (
 )
 _RECORDING_WORDS = (
     "recording", "record", "retention", "footage", "storage consumption",
+)
+
+
+# What operators type instead of a well-formed query. Each is a fleet-status
+# question, so they go to fleet_health rather than falling through to a device count.
+_CONVERSATIONAL_RE = re.compile(
+    r"\beverything (?:working|ok|okay|fine|alright)\b"
+    r"|\bany (?:issues?|problems?)\b|\bissues? i should know\b"
+    r"|\bwhat(?:'s| is) broken\b|\bshow me what is broken\b|\bwhat is wrong\b"
+    r"|\bneeds? (?:my )?(?:attention|action)\b|\battention today\b"
+    r"|\bneed immediate attention\b|\banything wrong\b"
+    r"|\bquick summary\b|\bsystem status\b|\bhow are we doing\b"
 )
 
 
@@ -205,6 +225,10 @@ def _is_fleet_health_question(text: str) -> bool:
     if named_category and "device" in text and any(
         state in text for state in ("healthy", "faulty", "offline", "deployed")
     ):
+        return True
+    # "How many FAS devices are there?" — a category count. global_overview answers
+    # with the whole fleet, which is a different number to the one being asked for.
+    if named_category and "device" in text and ("how many" in text or "count" in text):
         return True
     return named_category and any(
         phrase in text
@@ -272,6 +296,20 @@ class KeywordIntentExtractor:
             or ("issue" in text and cctv)
         ):
             intent = "alarm_detail"
+        elif re.search(
+            r"\bmost critical\b|\bcritical issue\b|\bworst (?:issue|problem)\b"
+            # "how long has the current issue been going on" is asking the live
+            # duration of an open alarm, which format_alarm_answer already computes.
+            r"|\bhow long has the (?:current )?(?:issue|problem|alarm)\b",
+            text,
+        ):
+            # An opener, but about alarms rather than module health — alarm_detail
+            # already ranks by severity.
+            intent = "alarm_detail"
+        elif _CONVERSATIONAL_RE.search(text):
+            # Before the hierarchy and metric branches: "what needs my attention"
+            # names no subject, and every more specific rule below would miss it.
+            intent = "fleet_health"
         elif _is_hierarchy_question(text):
             intent = "hierarchy_info"
         elif _AUDIT_RE.search(text):
