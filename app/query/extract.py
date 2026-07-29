@@ -17,11 +17,24 @@ _INTENT_WORDS = (
     "panel", "connected", "tamper", "disconnect", "fault", "tls", "acs",
 )
 
-# Openers that explicitly reference the previous turn.
+# Openers that explicitly reference the previous turn. Matched as WHOLE WORDS: as
+# bare substrings "it" hides inside "audit" and "critical", which sent "show me the
+# audit logs" to whatever the previous turn happened to be.
 _FOLLOW_UP_MARKERS = (
-    "what about", "how about", "and ", "also", "same for", "that one", "it",
+    "what about", "how about", "and", "also", "same for", "that one", "it",
     "why", "when", "compare", "instead", "too", "as well", "last week",
     "yesterday", "last month", "previous",
+)
+_FOLLOW_UP_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(m.strip()) for m in _FOLLOW_UP_MARKERS) + r")\b"
+)
+
+# A question that opens like a question is asking something new, however short.
+_QUESTION_OPENERS = frozenset(
+    (
+        "who", "what", "which", "where", "when", "how", "show", "list", "give",
+        "tell", "is", "are", "do", "does", "can", "any",
+    )
 )
 
 
@@ -29,15 +42,20 @@ def _is_fragment(text: str) -> bool:
     """True when a question cannot stand on its own and needs the previous turn.
 
     Deliberately conservative: it requires the question to name NO intent of its own.
-    A false positive would answer the wrong question, so anything self-contained
-    ("cctv status of Liluah") is classified normally even if it also says "and".
+    A false positive answers the wrong question entirely, which is why both tests
+    below are word-aware. The old length rule treated ANY question of four words or
+    fewer as a fragment, so "who logged in recently" inherited the previous intent;
+    a short question that still opens like a question is self-contained.
     """
-    stripped = text.strip()
+    stripped = text.strip().lower()
     if not stripped:
         return False
     if any(word in stripped for word in _INTENT_WORDS):
         return False
-    return any(marker in stripped for marker in _FOLLOW_UP_MARKERS) or len(stripped.split()) <= 4
+    if _FOLLOW_UP_RE.search(stripped):
+        return True
+    words = re.findall(r"[a-z0-9']+", stripped)
+    return bool(words) and len(words) <= 3 and words[0] not in _QUESTION_OPENERS
 
 
 # "current" is overwhelmingly the adjective ("current status", "currently active"),

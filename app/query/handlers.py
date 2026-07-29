@@ -39,6 +39,7 @@ from app.query.hierarchy_answers import (
 )
 from app.query.key_profiles import keys_for
 from app.query.users import format_user_answer, normalize_users
+from app.query.uuids import is_uuid as _is_uuid
 from app.tasks.live_sync import load_fleet_states
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,19 @@ async def _default_scope(ctx: RequestContext) -> ScopedBranches:
     orchestrator, which turns it into a refusal message.
     """
     return await resolved_scope(ctx.db, ctx.redis, ctx.tenant, ctx.tb.settings)
+
+
+def _requested_device(intent: ExtractedIntent, scoped_ids: list[str]) -> tuple[str | None, bool]:
+    """(device_id, refuse) for a fleet handler.
+
+    A device_id that is not a UUID did not come from the caller naming a device — it
+    is a word the extractor scraped after "device", as in "device category". Ignore
+    it and answer fleet-wide rather than refusing.
+    """
+    requested = intent.device_id
+    if not requested or not _is_uuid(requested):
+        return None, False
+    return (requested, False) if requested in scoped_ids else (None, True)
 
 
 class GlobalOverview:
@@ -212,14 +226,19 @@ class FleetHealth:
             )
         scoped = await self._scope_fn(ctx)
         device_ids = scoped.tb_device_ids
-        if intent.device_id:
-            if intent.device_id not in device_ids:
-                return Answer("That device is not in your authorized scope.")
-            device_ids = [intent.device_id]
+        requested, refuse = _requested_device(intent, device_ids)
+        if refuse:
+            return Answer("That device is not in your authorized scope.")
+        if requested:
+            device_ids = [requested]
         # "health status of all devices in the EAST zone" — narrow to the named area.
         # Intersected with the scope, never substituted for it.
         area_ids, area_name = await area_device_filter(
-            ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, intent.raw_question
+            ctx.db,
+            ctx.tenant.prefix,
+            scoped.branch_node_ids,
+            intent.raw_question,
+            scoped.tb_device_ids,
         )
         if area_ids is not None:
             allowed = set(device_ids)
@@ -260,10 +279,11 @@ class CctvFleet:
             )
         scoped = await self._scope_fn(ctx)
         device_ids = scoped.tb_device_ids
-        if intent.device_id:
-            if intent.device_id not in device_ids:
-                return Answer("That device is not in your authorized scope.")
-            device_ids = [intent.device_id]
+        requested, refuse = _requested_device(intent, device_ids)
+        if refuse:
+            return Answer("That device is not in your authorized scope.")
+        if requested:
+            device_ids = [requested]
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, device_ids)
         # The NVR payloads arrive as JSON container strings from Redis; the dotted
         # paths the parsers read only exist after expansion.
@@ -299,7 +319,9 @@ class HierarchyInfo:
                 "Your token is not mapped to a customer, so I cannot retrieve the hierarchy."
             )
         scoped = await self._scope_fn(ctx)
-        tree = await load_scoped_tree(ctx.db, ctx.tenant.prefix, scoped.branch_node_ids)
+        tree = await load_scoped_tree(
+            ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
+        )
         text, structured = format_hierarchy_answer(tree, intent.raw_question)
         return Answer(text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}])
 
@@ -489,14 +511,19 @@ class AlarmDetail:
             return Answer("A user token is required to read alarm data.")
         scoped = await self._scope_fn(ctx)
         device_ids = scoped.tb_device_ids
-        if intent.device_id:
-            if intent.device_id not in device_ids:
-                return Answer("That device is not in your authorized scope.")
-            device_ids = [intent.device_id]
+        requested, refuse = _requested_device(intent, device_ids)
+        if refuse:
+            return Answer("That device is not in your authorized scope.")
+        if requested:
+            device_ids = [requested]
         # "active alerts in the EAST zone" — narrow to the named area, intersected
         # with the scope so it can only ever subtract devices.
         area_ids, area_name = await area_device_filter(
-            ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, intent.raw_question
+            ctx.db,
+            ctx.tenant.prefix,
+            scoped.branch_node_ids,
+            intent.raw_question,
+            scoped.tb_device_ids,
         )
         if area_ids is not None:
             allowed = set(device_ids)

@@ -2,7 +2,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Protocol
-from uuid import UUID
 
 from app.auth.scope_resolver import PermissionCheckUnavailable, resolved_scope
 from app.auth.tb_acl import SessionExpired
@@ -21,6 +20,7 @@ from app.query.handlers import (
     MetricHandler,
     UserDirectory,
 )
+from app.query.uuids import is_uuid as _is_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +35,7 @@ class _Extractor(Protocol):
 GateFn = Callable[[str, RequestContext], Awaitable[BranchGateResult]]
 
 
-def _is_uuid(value: str | None) -> bool:
-    if not value:
-        return False
-    try:
-        UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        return False
-    return True
+
 
 
 async def _default_gate(question: str, ctx: RequestContext) -> BranchGateResult:

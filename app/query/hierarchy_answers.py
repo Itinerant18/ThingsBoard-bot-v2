@@ -119,9 +119,23 @@ class ScopedTree:
 
 
 async def load_scoped_tree(
-    db: "AsyncSession", prefix: str, branch_node_ids: Sequence[str]
+    db: "AsyncSession",
+    prefix: str,
+    branch_node_ids: Sequence[str],
+    authorized_device_ids: Sequence[str] | None = None,
 ) -> ScopedTree:
-    """Build the tree upward from the branches the caller is authorized to see."""
+    """Build the tree upward from the branches the caller is authorized to see.
+
+    SECURITY: `branch_node_ids` is NOT the authorized set. resolved_scope() applies
+    ThingsBoard's ACL to tb_device_ids only and deliberately leaves the branch
+    containers untouched, on the reasoning that a branch is reachable only through
+    its devices. That reasoning does not hold here — this module answers with branch
+    NAMES and COUNTS and never reads a device — so the ACL has to be applied again.
+    Measured against production: a Bank of India head-office token covers 104
+    hierarchy branches while ThingsBoard authorizes 100, and without this filter the
+    four unauthorized ones (BOI-BAS, BOI-BAHALDA, BOI-R-BAZAR, BOI-LOHARDAGA-CC)
+    were named back to the caller.
+    """
     from sqlalchemy import select
 
     from app.db.models import BranchAncestorPath, HierarchyNode
@@ -162,6 +176,35 @@ async def load_scoped_tree(
             is_leaf=bool(row.is_leaf),
             device_id=str(row.tb_device_id) if row.tb_device_id else None,
         )
+    if authorized_device_ids is not None:
+        allowed = {str(device_id) for device_id in authorized_device_ids}
+        unauthorized = {
+            node_id
+            for node_id, node in tree.nodes.items()
+            if node.is_leaf and (node.device_id is None or node.device_id not in allowed)
+        }
+        for node_id in unauthorized:
+            del tree.nodes[node_id]
+        # An area whose every branch was dropped must disappear too, or its NAME still
+        # discloses that the caller has something there. Repeat until stable, so a
+        # region emptied only by losing its last zone also goes.
+        while True:
+            surviving = {
+                ancestor
+                for node in tree.nodes.values()
+                if node.is_leaf
+                for ancestor in ancestors.get(node.node_id, ())
+            }
+            orphans = {
+                node_id
+                for node_id, node in tree.nodes.items()
+                if not node.is_leaf and node_id not in surviving
+            }
+            if not orphans:
+                break
+            for node_id in orphans:
+                del tree.nodes[node_id]
+
     tree.ancestors = {k: v for k, v in ancestors.items() if k in tree.nodes}
     for node in tree.nodes.values():
         if node.parent_id and node.parent_id in tree.nodes:
@@ -181,7 +224,11 @@ _NAMES_A_LEVEL = re.compile(
 
 
 async def area_device_filter(
-    db: "AsyncSession", prefix: str, branch_node_ids: Sequence[str], question: str
+    db: "AsyncSession",
+    prefix: str,
+    branch_node_ids: Sequence[str],
+    question: str,
+    authorized_device_ids: Sequence[str] | None = None,
 ) -> tuple[list[str] | None, str | None]:
     """Devices under the area a question names, or (None, None) if it names none.
 
@@ -192,7 +239,7 @@ async def area_device_filter(
     """
     if not branch_node_ids or not _NAMES_A_LEVEL.search(question.lower()):
         return None, None
-    tree = await load_scoped_tree(db, prefix, branch_node_ids)
+    tree = await load_scoped_tree(db, prefix, branch_node_ids, authorized_device_ids)
     if not tree.nodes:
         return None, None
     area = find_area(tree, question, [n for n in tree.nodes.values() if not n.is_leaf])

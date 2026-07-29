@@ -405,3 +405,78 @@ async def test_area_filter_cannot_widen_beyond_the_callers_scope() -> None:
         db, "BOI", ["BR_BALLY", "BR_LILUAH"], "device health in the SILIGURI zone"
     )
     assert (ids, name) == (None, None)  # SILIGURI is not in their tree at all
+
+
+# --------------------------------------------------------------------------- #
+# The ThingsBoard ACL, applied a second time
+#
+# resolved_scope() filters tb_device_ids but deliberately leaves branch_node_ids
+# whole, because a branch was only ever reachable through its devices. This module
+# broke that assumption: it answers with branch NAMES and never reads a device. In
+# production a BOI head-office token covers 104 hierarchy branches while
+# ThingsBoard authorizes 100, and the four extras were being named back.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_branch_thingsboard_does_not_authorize_is_not_named() -> None:
+    from app.query.hierarchy_answers import load_scoped_tree
+
+    db = _FakeDb(FULL)
+    authorized = ["dev-BR_BALLY", "dev-BR_LILUAH", "dev-BR_MALDA", "dev-BR_RAIGANJ"]
+    tree = await load_scoped_tree(db, "BOI", ALL_LEAVES, authorized)
+
+    names = {n.display_name for n in tree.leaves}
+    assert names == {"BRANCH BALLYBAZAR", "BRANCH LILUAH", "BRANCH MALDA TOWN", "BRANCH RAIGANJ"}
+    assert "BRANCH BARIPADA" not in names
+    assert "BRANCH NASIK" not in names
+
+
+@pytest.mark.asyncio
+async def test_an_area_left_with_no_authorized_branch_disappears_entirely() -> None:
+    """Reporting "NBG ODISHA (0 branches)" still discloses that it exists."""
+    from app.query.hierarchy_answers import load_scoped_tree
+
+    db = _FakeDb(FULL)
+    tree = await load_scoped_tree(db, "BOI", ALL_LEAVES, ["dev-BR_BALLY", "dev-BR_LILUAH"])
+
+    assert set(tree.nodes) == {"BOI_HO", "NBG_EAST", "ZO_HOWRAH", "BR_BALLY", "BR_LILUAH"}
+    text, _ = format_hierarchy_answer(tree, "what is the organization hierarchy?")
+    for hidden in ("ODISHA", "WEST II", "SILIGURI", "NASIK", "BARIPADA"):
+        assert hidden not in text
+
+
+@pytest.mark.asyncio
+async def test_counts_reflect_the_authorized_set_not_the_hierarchy() -> None:
+    from app.query.hierarchy_answers import load_scoped_tree
+
+    db = _FakeDb(FULL)
+    tree = await load_scoped_tree(db, "BOI", ALL_LEAVES, ["dev-BR_BALLY", "dev-BR_LILUAH"])
+    text, structured = format_hierarchy_answer(tree, "how many branches are there?")
+    assert text.startswith("2 branch(es)")
+    assert structured["branch_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_area_filter_cannot_return_an_unauthorized_device() -> None:
+    from app.query.hierarchy_answers import area_device_filter
+
+    db = _FakeDb(FULL)
+    ids, name = await area_device_filter(
+        db,
+        "BOI",
+        ALL_LEAVES,
+        "device health in the HOWRAH zone",
+        ["dev-BR_BALLY"],  # LILUAH revoked by ThingsBoard
+    )
+    assert name == "ZO HOWRAH"
+    assert ids == ["dev-BR_BALLY"]
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_authorized_set_keeps_the_old_behaviour() -> None:
+    """Callers that genuinely have no ACL to apply (tests, imports) still work."""
+    from app.query.hierarchy_answers import load_scoped_tree
+
+    tree = await load_scoped_tree(_FakeDb(FULL), "BOI", ALL_LEAVES)
+    assert len(tree.leaves) == 6
