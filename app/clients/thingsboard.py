@@ -175,7 +175,7 @@ class ThingsBoardClient:
 
         return await fetch_all_pages(
             get,
-            f"/api/alarms/DEVICE/{device_id}",
+            f"/api/alarm/DEVICE/{device_id}",
             page_size,
             max_pages=_MAX_ALARM_PAGES,
         )
@@ -289,6 +289,34 @@ class UserAwareThingsBoardClient:
         is a tenant admin, which is what makes it safe to call on their behalf."""
         return await fetch_all_pages(self._get, "/api/tenant/users", page_size)
 
+    async def all_alarms(
+        self,
+        search_status: str = "ANY",
+        page_size: int = 100,
+        max_pages: int = _MAX_ALARM_PAGES,
+    ) -> Any:
+        """Every alarm the CALLER may see, in one paginated read.
+
+        ThingsBoard scopes /api/alarms to the caller's own permissions, so this is
+        both correct and vastly cheaper than asking per device: a Bank of India
+        head-office token covers ~100 devices, which was ~100 HTTP calls to answer
+        one question. The caller still intersects the result with its own narrower
+        scope, since regional scoping can be tighter than ThingsBoard's ACL.
+        """
+
+        async def get(path: str, params: dict[str, Any]) -> Any:
+            return await self._get(
+                path,
+                {
+                    **params,
+                    "searchStatus": search_status,
+                    "sortProperty": "createdTime",
+                    "sortOrder": "DESC",
+                },
+            )
+
+        return await fetch_all_pages(get, "/api/alarms", page_size, max_pages=max_pages)
+
     async def alarms(self, device_id: str, page_size: int = 100) -> Any:
         """Alarm history constrained by both TB ACL and the requested device."""
         require_uuid(device_id, "device_id")
@@ -306,7 +334,7 @@ class UserAwareThingsBoardClient:
 
         return await fetch_all_pages(
             get,
-            f"/api/alarms/DEVICE/{device_id}",
+            f"/api/alarm/DEVICE/{device_id}",
             page_size,
             max_pages=_MAX_ALARM_PAGES,
         )

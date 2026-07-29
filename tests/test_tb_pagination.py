@@ -83,7 +83,10 @@ async def test_alarm_history_requests_any_status_and_paginates(
     seen: list[dict[str, Any]] = []
 
     async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        assert path.startswith("/api/alarms/DEVICE/")
+        # SINGULAR. ThingsBoard 404s /api/alarms/DEVICE/{id}; this test
+        # asserted the plural form taken from docs/API-TB.md, so it stayed
+        # green while every real alarm request failed.
+        assert path.startswith("/api/alarm/DEVICE/")
         assert params is not None
         seen.append(params)
         page = int(params["page"])

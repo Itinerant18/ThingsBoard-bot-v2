@@ -1,11 +1,10 @@
-import asyncio
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from app.auth.scope_resolver import resolved_scope
-from app.auth.tb_acl import PermissionCheckUnavailable, caller_identity
+from app.auth.tb_acl import PermissionCheckUnavailable, SessionExpired, caller_identity
 from app.clients.thingsboard import UserAwareThingsBoardClient, require_uuid
 from app.config import Settings
 from app.hierarchy.scope import ScopedBranches
@@ -536,60 +535,77 @@ class AlarmDetail:
         if not device_ids:
             return Answer("No branches are imported for your authorized scope yet.")
 
-        # Keep a small concurrency bound: a BOI scope can contain 100+ branches and
-        # ThingsBoard exposes alarms per entity, not as one safely scoped bulk query.
-        semaphore = asyncio.Semaphore(8)
-        # The two scope lists align only when every hierarchy leaf has a TB id. If
-        # an unprovisioned leaf exists, guessing by zip could attach the next branch's
-        # name to the wrong alarm; rely on TB's originator name instead.
+        client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
+        try:
+            if requested:
+                bodies = [await client.alarms(requested)]
+            else:
+                # Two reads, not one per device. ThingsBoard scopes /api/alarms to the
+                # caller, so ~100 per-device calls collapse into these.
+                #
+                # ACTIVE is fetched separately and WHOLE: measured on production it is
+                # 152 rows against 3,481 total, so it fits well inside the page cap.
+                # Taking the open alarms out of a truncated recent-history window is how
+                # "the oldest active alarm" silently becomes "the oldest one we happened
+                # to read".
+                bodies = [
+                    await client.all_alarms(search_status="ACTIVE"),
+                    await client.all_alarms(search_status="ANY"),
+                ]
+        except Exception as exc:
+            logger.warning("alarm fetch failed", exc_info=True)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (401, 403):
+                # A dead token is not an outage; telling the user to retry wastes the
+                # one failure that always needs them to sign in again.
+                raise SessionExpired(f"thingsboard returned {status}") from exc
+            return Answer(
+                "I could not reach ThingsBoard alarm data just now. Please retry.",
+                {"error": "thingsboard_unavailable"},
+            )
+        finally:
+            await client.close()
+
+        allowed = set(device_ids)
         branch_names = (
             dict(zip(scoped.tb_device_ids, scoped.branch_node_ids, strict=True))
             if len(scoped.tb_device_ids) == len(scoped.branch_node_ids)
             else {}
         )
-        client = self._client_factory(ctx.tb.settings, ctx.tenant.user_token)
-
-        async def fetch(device_id: str) -> tuple[str, Any, Exception | None]:
-            try:
-                async with semaphore:
-                    return device_id, await client.alarms(device_id), None
-            except Exception as exc:
-                logger.warning("alarm fetch failed for %s", device_id, exc_info=True)
-                return device_id, None, exc
-
-        try:
-            results = await asyncio.gather(*(fetch(device_id) for device_id in device_ids))
-        finally:
-            await client.close()
-
         alarms: list[AlarmRecord] = []
-        failed = 0
-        for device_id, body, error in results:
-            if error is not None:
-                failed += 1
-                continue
+        seen: set[str] = set()
+        truncated = False
+        for body in bodies:
+            truncated = truncated or bool(isinstance(body, dict) and body.get("truncated"))
             rows = body.get("data", []) if isinstance(body, dict) else body
             if not isinstance(rows, list):
                 continue
             for raw in rows:
                 if not isinstance(raw, dict):
                     continue
-                alarm = normalize_alarm(raw, device_id, branch_names.get(device_id))
-                if alarm is not None:
+                originator = raw.get("originator")
+                device_id = (
+                    originator.get("id") if isinstance(originator, dict) else originator
+                ) or requested
+                # The fleet endpoint returns everything ThingsBoard authorizes, which
+                # can be wider than this caller's regional scope. Narrow, never widen.
+                if device_id is None or str(device_id) not in allowed:
+                    continue
+                alarm = normalize_alarm(raw, str(device_id), branch_names.get(str(device_id)))
+                if alarm is not None and alarm.alarm_id not in seen:
+                    seen.add(alarm.alarm_id)
                     alarms.append(alarm)
 
-        if failed == len(device_ids):
-            return Answer(
-                "I could not reach ThingsBoard alarm data just now. Please retry.",
-                {"error": "thingsboard_unavailable"},
-            )
         text, structured = format_alarm_answer(alarms, intent.raw_question)
         if area_name:
             text = f"{area_name} — {text}"
             structured["area"] = area_name
-        if failed:
-            text += f" Alarm data was unavailable for {failed} scoped branch(es)."
-            structured["partial_failures"] = failed
+        if truncated:
+            text += (
+                " ThingsBoard holds more alarm history than one read returns, so the "
+                "resolved entries above cover only the most recent portion of it."
+            )
+            structured["truncated"] = True
         return Answer(
             text,
             structured,
