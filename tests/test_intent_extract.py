@@ -278,3 +278,24 @@ async def test_data_the_fleet_publishes_is_not_declined(question: str) -> None:
     got = await KeywordIntentExtractor().extract(question)
     assert got.name != "unavailable_telemetry"
     assert got.name == "device_hardware"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        # Same question, four phrasings. Only "belongs to" matched, so the rest fell
+        # through to the generic device count.
+        ("Which region does the HOWRAH ZO fall under?", "hierarchy_info"),
+        ("Which ZO does BALLYBAZAR branch belong to?", "hierarchy_info"),
+        ("BALLYBAZAR is part of which zone?", "hierarchy_info"),
+        # Branch master data is not in ThingsBoard at all — decline, do not deflect.
+        ("Who should I contact for device repair at BALLYBAZAR?", "unavailable_telemetry"),
+        ("What is the branch address for BALLYBAZAR?", "unavailable_telemetry"),
+        ("What is the pincode for LILUAH?", "unavailable_telemetry"),
+        ("What is the escalation matrix?", "unavailable_telemetry"),
+    ],
+)
+async def test_reverse_lookup_phrasings_and_branch_master_declines(
+    question: str, expected: str
+) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == expected

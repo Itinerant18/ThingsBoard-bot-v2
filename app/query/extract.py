@@ -97,7 +97,8 @@ _HIERARCHY_RE = re.compile(
     r"|\bmost branches\b|\bhow many (?:zones?|regions?|branches)\b"
     # Reverse lookup — "which ZO does BALLYBAZAR belong to". The closure table has
     # held this answer all along; nothing routed to it.
-    r"|\bbelongs? to\b"
+    r"|\bbelongs? to\b|\bfalls? under\b|\bpart of which\b|\bsits? (?:under|in)\b"
+    r"|\bwhich (?:region|zone|nbg|fgmo|zo) does\b"
     # A bare listing of the grouping levels, with no area named.
     r"|\b(?:all|list|what are|which are|name)\b[^?]{0,40}\b(?:zones?|regions?|nbg|fgmo|circles?)\b"
     r"|\btotal branch(?:es)? (?:count|across)\b|\bbranches across\b"
@@ -178,6 +179,10 @@ _NOT_HELD_RE = re.compile(
     # cctv_device_info already answers them for a named branch. Declining data the
     # fleet actually publishes is the same failure as inventing data it does not —
     # both leave the operator with a wrong picture.
+    # Branch master data. None of it is in ThingsBoard, so no routing produces it.
+    r"|\baddress\b|\bpincode\b|\bpin code\b|\bphone number\b"
+    r"|\bwho should i contact\b|\bbranch manager\b|\bescalation matrix\b"
+    r"|\bcontact for\b|\brepair contact\b"
     r"|\buptime\b|\bdisk utilization\b|\bs-?vault\b|\bingestion rate\b"
     r"|\bpatch level\b"
 )

@@ -73,6 +73,19 @@ def _requested_device(intent: ExtractedIntent, scoped_ids: list[str]) -> tuple[s
     return (requested, False) if requested in scoped_ids else (None, True)
 
 
+def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
+    """The place an answer was narrowed to, for echoing back to the caller.
+
+    An answer that silently applied a filter is indistinguishable from one that
+    ignored it.
+    """
+    if area_name:
+        return area_name
+    if requested and intent.node_name:
+        return intent.node_name
+    return None
+
+
 class GlobalOverview:
     """Fleet overview, answered from the caller's SCOPED hierarchy set — never the
     raw ThingsBoard inventory. Counting live TB devices with the service token would
@@ -252,8 +265,9 @@ class FleetHealth:
         snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
         summary = aggregate_fleet_health(snapshots, device_ids)
         text = format_fleet_health(summary, intent.raw_question, intent.subsystem)
-        if area_name:
-            text = f"{area_name} — {text}"
+        scoped_to = _scoped_to(intent, requested, area_name)
+        if scoped_to:
+            text = f"{scoped_to} — {text}"
         return Answer(
             text,
             {"area": area_name, "fleet_health": summary.to_dict()},
@@ -289,8 +303,12 @@ class CctvFleet:
         # paths the parsers read only exist after expansion.
         expanded = {device_id: expand_containers(raw) for device_id, raw in states.items()}
         fleet = aggregate_cctv(expanded)
+        text = format_cctv_fleet(fleet, intent.raw_question)
+        scoped_to = _scoped_to(intent, requested, None)
+        if scoped_to:
+            text = f"{scoped_to} — {text}"
         return Answer(
-            format_cctv_fleet(fleet, intent.raw_question),
+            text,
             {"cctv_fleet": fleet.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
         )
@@ -332,6 +350,13 @@ class UnavailableTelemetry:
         ("s-vault", "S-Vault contents"),
         ("svault", "S-Vault contents"),
         ("ingestion rate", "message ingestion rate"),
+        ("address", "branch postal addresses"),
+        ("pincode", "branch postal codes"),
+        ("pin code", "branch postal codes"),
+        ("phone", "branch phone numbers"),
+        ("contact", "branch contact details"),
+        ("manager", "branch manager names"),
+        ("escalation matrix", "an escalation matrix"),
         ("patch level", "OS patch levels"),
     )
 
@@ -683,9 +708,10 @@ class AlarmDetail:
                     alarms.append(alarm)
 
         text, structured = format_alarm_answer(alarms, intent.raw_question)
-        if area_name:
-            text = f"{area_name} — {text}"
-            structured["area"] = area_name
+        scoped_to = _scoped_to(intent, requested, area_name)
+        if scoped_to:
+            text = f"{scoped_to} — {text}"
+            structured["area"] = scoped_to
         if truncated:
             text += (
                 " ThingsBoard holds more alarm history than one read returns, so the "

@@ -478,3 +478,24 @@ def test_a_plain_which_question_still_lists_rather_than_ranking() -> None:
     reply = answer("Which branches have unresolved alarms in the displayed data?")
     assert "BALLYBAZAR" in reply and "DOBSON" in reply
     assert "has the most" not in reply
+
+
+def test_a_scoped_answer_names_the_place_it_scoped_to() -> None:
+    """Live re-audit: 10 answers narrowed correctly to one branch and never said so.
+    "Which CCTV channels are disconnected at BALLYBAZAR?" returned "Across 1 branches
+    reporting NVR data, ..." — right numbers, but indistinguishable from a fleet-wide
+    answer that ignored the branch."""
+    from app.query.contracts import ExtractedIntent
+    from app.query.handlers import _scoped_to
+
+    named = ExtractedIntent(
+        name="fleet_health",
+        device_id="0d1f8a10-2833-11f1-afd7-eb430bfb427f",
+        node_name="BOI-BALLYBAZAR",
+        raw_question="device health status for BALLYBAZAR branch",
+    )
+    assert _scoped_to(named, named.device_id, None) == "BOI-BALLYBAZAR"
+    # An explicit area still wins, and an unscoped question is not labelled at all.
+    assert _scoped_to(named, named.device_id, "NBG EAST") == "NBG EAST"
+    bare = ExtractedIntent(name="fleet_health", raw_question="is everything ok")
+    assert _scoped_to(bare, None, None) is None
