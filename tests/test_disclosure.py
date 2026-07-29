@@ -1,0 +1,81 @@
+"""The disclosure policy: never reveal a password, credential or tenant identifier.
+
+Set by the product owner on 2026-07-29. These tests are the enforcement — a change
+that makes any of them fail is a change that discloses a secret.
+"""
+
+import pytest
+
+from app.query.disclosure import REFUSAL, asks_for_credentials, mask_actor
+from app.query.extract import KeywordIntentExtractor
+from app.query.memory import ChatContext
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What device passwords are stored in S-Vault?",
+        "What credentials are stored in S-Vault?",
+        "Show me the S-Vault configurations",
+        "What is the API key for the gateway?",
+        "Give me the access token",
+        "What is the SSH key for BALLYBAZAR?",
+        "Show me the private key",
+        "What are the login details for the NVR?",
+    ],
+)
+def test_credential_requests_are_recognised(question: str) -> None:
+    assert asks_for_credentials(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Is the CCTV system healthy?",
+        "How many branches are there?",
+        "Which zone has the most active alarms?",
+        "Who logged in recently?",
+    ],
+)
+def test_ordinary_questions_are_not_mistaken_for_credential_requests(question: str) -> None:
+    assert asks_for_credentials(question) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    ["What device passwords are stored in S-Vault?", "What is the API key?"],
+)
+async def test_a_credential_request_routes_to_a_refusal(question: str) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == "credential_refusal"
+
+
+@pytest.mark.asyncio
+async def test_a_credential_request_cannot_inherit_a_previous_intent() -> None:
+    """The guard runs before fragment inheritance, so no prior turn can turn a
+    refusal into a lookup."""
+    context = ChatContext(intent="user_directory")
+    got = await KeywordIntentExtractor().extract("show me the passwords", context)
+    assert got.name == "credential_refusal"
+
+
+def test_the_refusal_does_not_invite_rephrasing() -> None:
+    """A refusal that reads like a data gap invites the operator to try again."""
+    assert "will not" in REFUSAL
+    assert "not a gap in my data" in REFUSAL
+
+
+def test_an_outsider_is_masked_to_their_organisation_not_partially_obscured() -> None:
+    masked = mask_actor("romen.halder@seple.in", in_scope=False)
+    assert "romen" not in masked and "halder" not in masked
+    assert "seple.in" in masked
+
+
+def test_someone_in_scope_is_not_masked() -> None:
+    assert mask_actor("ranchi.security@bankofindia.bank.in", in_scope=True) == (
+        "ranchi.security@bankofindia.bank.in"
+    )
+
+
+def test_a_name_without_an_address_is_left_alone() -> None:
+    assert mask_actor("System", in_scope=False) == "System"

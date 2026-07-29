@@ -13,6 +13,7 @@ from app.query.handlers import (
     AlarmDetail,
     AuditLog,
     CctvFleet,
+    CredentialRefusal,
     DeviceInventory,
     FleetHealth,
     GlobalOverview,
@@ -60,6 +61,7 @@ class QueryOrchestrator:
         self.extractor: _Extractor = extractor or KeywordIntentExtractor()
         self.gate: GateFn = gate or _default_gate
         self.handlers: list[Handler] = [
+            CredentialRefusal(),
             GlobalOverview(),
             DeviceInventory(),
             HierarchyInfo(),

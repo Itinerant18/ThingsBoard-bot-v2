@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.query.alarm_answers import IST
+from app.query.disclosure import mask_actor
 
 # ThingsBoard's "no customer" marker. Treated as UNATTRIBUTED, never as a match.
 NULL_CUSTOMER = "13814000-1dd2-11b2-8080-808080808080"
@@ -42,6 +43,7 @@ class AuditEntry:
     entry_id: str
     at: datetime
     user_name: str
+    actor_id: str | None
     action: str
     status: str
     entity_type: str
@@ -90,6 +92,7 @@ def normalize_entry(raw: Mapping[str, Any]) -> AuditEntry | None:
         entry_id=_ident(raw.get("id")) or "",
         at=at,
         user_name=str(raw.get("userName") or "unknown"),
+        actor_id=_ident(raw.get("userId")),
         action=str(raw.get("actionType") or "UNKNOWN"),
         status=str(raw.get("actionStatus") or ""),
         entity_type=_entity_type(entity),
@@ -138,14 +141,30 @@ def filter_entries(entries: Iterable[AuditEntry], scope: AuditScope) -> list[Aud
     return [entry for entry in entries if visible_to(entry, scope)]
 
 
+def _actor(entry: AuditEntry, scope: AuditScope) -> str:
+    """The actor's name, masked when they belong to another tenant.
+
+    A tenant admin sees everyone; that is their entitlement. A customer-scoped
+    caller sees WHAT happened to their devices without being handed the integrator's
+    staff directory.
+    """
+    if scope.unrestricted:
+        return entry.user_name
+    in_scope = entry.actor_id is not None and entry.actor_id in scope.user_ids
+    return mask_actor(entry.user_name, in_scope=in_scope)
+
+
 def _time_text(value: datetime) -> str:
     return value.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
 
 
-def _line(entry: AuditEntry) -> str:
+def _line(entry: AuditEntry, scope: AuditScope) -> str:
     target = f" on {entry.entity_name}" if entry.entity_name else ""
     outcome = "" if entry.succeeded else f" (FAILURE{': ' + entry.failure if entry.failure else ''})"
-    return f"{_time_text(entry.at)} — {entry.user_name} {entry.action}{target}{outcome}"
+    return (
+        f"{_time_text(entry.at)} — {_actor(entry, scope)} {entry.action}"
+        f"{target}{outcome}"
+    )
 
 
 def _listing(items: list[str], limit: int = 15) -> str:
@@ -168,6 +187,7 @@ def format_audit_answer(
     scope_label: str,
     window_label: str,
     *,
+    scope: AuditScope,
     truncated: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     text = question.lower()
@@ -179,7 +199,7 @@ def format_audit_answer(
         "entries": [
             {
                 "at": entry.at.isoformat(),
-                "user": entry.user_name,
+                "user": _actor(entry, scope),
                 "action": entry.action,
                 "status": entry.status,
                 "entity_type": entry.entity_type,
@@ -201,7 +221,7 @@ def format_audit_answer(
         answer = (
             f"No failed action is recorded for {window_label} within {scope_label}."
             if not failures
-            else f"{len(failures)} failed action(s): " + _listing([_line(e) for e in failures]) + "."
+            else f"{len(failures)} failed action(s): " + _listing([_line(e, scope) for e in failures]) + "."
         )
         return answer + _truncation_note(truncated, window_label), structured
 
@@ -211,7 +231,7 @@ def format_audit_answer(
             f"No login is recorded for {window_label} within {scope_label}."
             if not logins
             else f"{len(logins)} login(s) in {window_label}: "
-            + _listing([_line(e) for e in logins])
+            + _listing([_line(e, scope) for e in logins])
             + "."
         )
         return answer + _truncation_note(truncated, window_label), structured
@@ -225,7 +245,7 @@ def format_audit_answer(
                 structured,
             )
         return (
-            f"Most recent change: {_line(changes[0])}."
+            f"Most recent change: {_line(changes[0], scope)}."
             + _truncation_note(truncated, window_label),
             structured,
         )
@@ -245,7 +265,7 @@ def format_audit_answer(
         )
 
     if "by whom" in text or "which user" in text or "unique user" in text or "who " in text:
-        actors = sorted({entry.user_name for entry in entries})
+        actors = sorted({_actor(entry, scope) for entry in entries})
         return (
             f"{len(actors)} user(s) generated audit activity in {window_label}: "
             + _listing(actors)
@@ -256,7 +276,7 @@ def format_audit_answer(
 
     return (
         f"{len(entries)} audit entries for {window_label} within {scope_label}: "
-        + _listing([_line(entry) for entry in entries])
+        + _listing([_line(entry, scope) for entry in entries])
         + "."
         + _truncation_note(truncated, window_label),
         structured,

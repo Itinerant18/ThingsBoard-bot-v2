@@ -31,6 +31,7 @@ from app.query.audit import (
 )
 from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
+from app.query.disclosure import REFUSAL
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
 from app.query.hierarchy_answers import (
     area_device_filter,
@@ -314,6 +315,20 @@ class CctvFleet:
         )
 
 
+class CredentialRefusal:
+    """Refuses secrets outright. Deliberately the simplest handler here: it reads no
+    data, calls nothing, and has no branch that could answer."""
+
+    intent = "credential_refusal"
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        logger.info("[DISCLOSURE] refused a credential request")
+        return Answer(REFUSAL, {"refused": "credentials"})
+
+
 class UnavailableTelemetry:
     """Says plainly that a metric is not collected.
 
@@ -593,7 +608,12 @@ class AuditLog:
             len(visible),
         )
         text, structured = format_audit_answer(
-            visible, intent.raw_question, scope_label, label, truncated=truncated
+            visible,
+            intent.raw_question,
+            scope_label,
+            label,
+            scope=scope,
+            truncated=truncated,
         )
         return Answer(text, structured, [{"type": "thingsboard-audit", "resource": scope_label}])
 

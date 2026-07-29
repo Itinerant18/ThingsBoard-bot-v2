@@ -148,7 +148,11 @@ def test_a_tenant_admin_sees_everything() -> None:
 
 def test_client_ip_is_never_carried_into_an_answer() -> None:
     text, structured = format_audit_answer(
-        filter_entries(ENTRIES, SCOPE), "show me the audit logs", "your customer account", "the last week"
+        filter_entries(ENTRIES, SCOPE),
+        "show me the audit logs",
+        "your customer account",
+        "the last week",
+        scope=SCOPE,
     )
     assert "115.246.136.44" not in text
     assert "115.246.136.44" not in str(structured)
@@ -291,7 +295,11 @@ async def test_truncation_is_disclosed_not_reported_as_a_clean_result() -> None:
 
 def answer(question: str) -> str:
     text, _ = format_audit_answer(
-        filter_entries(ENTRIES, SCOPE), question, "your customer account", "the last week"
+        filter_entries(ENTRIES, SCOPE),
+        question,
+        "your customer account",
+        "the last week",
+        scope=SCOPE,
     )
     return text
 
@@ -314,7 +322,9 @@ def test_last_configuration_change() -> None:
 
 
 def test_no_activity_reads_as_scoped_not_as_empty_system() -> None:
-    text, _ = format_audit_answer([], "show me the audit logs", "your customer account", "today")
+    text, _ = format_audit_answer(
+        [], "show me the audit logs", "your customer account", "today", scope=SCOPE
+    )
     assert text == "No audit activity within your customer account is recorded for today."
 
 
@@ -340,3 +350,51 @@ async def test_audit_questions_route_to_the_audit_handler(question: str) -> None
 )
 async def test_directory_questions_do_not_become_audit_questions(question: str) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == "user_directory"
+
+
+# --------------------------------------------------------------------------- #
+# Disclosure policy: no credentials, no other tenant's people
+# --------------------------------------------------------------------------- #
+
+
+def test_an_outside_actor_is_masked_but_the_action_is_still_shown() -> None:
+    """The integrator acting on a bank's device is something the bank must see; the
+    integrator's staff directory is not. Live output named
+    "romen.halder@seple.in TIMESERIES_DELETED on BOI-LILUAH" to a BOI operator."""
+    raw = _entry(
+        "DEVICE", MY_DEVICE, "BOI-LILUAH", "romen.halder@seple.in", action="TIMESERIES_DELETED"
+    )
+    raw["userId"] = {"entityType": "USER", "id": "outsider-1"}
+    entries = normalize_entries([raw])
+    text, structured = format_audit_answer(
+        entries, "show me the audit logs", "your customer account", "the last week", scope=SCOPE
+    )
+    assert "romen.halder" not in text
+    assert "romen.halder" not in str(structured)
+    assert "outside your organisation" in text
+    assert "seple.in" in text  # the org is named, the person is not
+    assert "TIMESERIES_DELETED" in text and "BOI-LILUAH" in text
+
+
+def test_a_tenant_admin_still_sees_who_acted() -> None:
+    raw = _entry("DEVICE", MY_DEVICE, "BOI-LILUAH", "romen.halder@seple.in", action="UPDATED")
+    raw["userId"] = {"entityType": "USER", "id": "outsider-1"}
+    text, _ = format_audit_answer(
+        normalize_entries([raw]),
+        "show me the audit logs",
+        "this ThingsBoard tenant",
+        "the last week",
+        scope=AuditScope(unrestricted=True),
+    )
+    assert "romen.halder@seple.in" in text
+
+
+def test_the_callers_own_colleagues_are_not_masked() -> None:
+    text, _ = format_audit_answer(
+        filter_entries(ENTRIES, SCOPE),
+        "who logged in recently?",
+        "your customer account",
+        "the last week",
+        scope=SCOPE,
+    )
+    assert "ranchi.security@boi" in text

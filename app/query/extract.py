@@ -2,6 +2,7 @@ import re
 from typing import TYPE_CHECKING
 
 from app.query.contracts import ExtractedIntent
+from app.query.disclosure import asks_for_credentials
 from app.query.timeframe import TimeWindow, parse_window
 
 if TYPE_CHECKING:
@@ -291,6 +292,14 @@ class KeywordIntentExtractor:
         self, question: str, context: "ChatContext | None" = None
     ) -> ExtractedIntent:
         text = question.lower()
+
+        # BEFORE everything, including fragment inheritance: a credential request
+        # must never be capable of being captured by another rule, and must never
+        # inherit a previous turn's intent. This is a refusal, not a lookup.
+        if asks_for_credentials(question):
+            return ExtractedIntent(
+                name="credential_refusal", raw_question=question, window=None
+            )
 
         # A fragment carries no intent words of its own ("and last week?", "why?",
         # "what about Howrah"). Without the previous intent it falls through to the
