@@ -246,6 +246,41 @@ def format_fleet_health(
             f"{lowest.label} has the lowest health percentage: {lowest.healthy} of "
             f"{lowest.total} devices are healthy ({(lowest.health_percentage or 0.0):.1f}%)."
         )
+    # "Which device is faulty?" / "List all devices that are currently faulty".
+    # The per-branch states were already computed and then never surfaced, so these
+    # questions were answered with a demand for a device id the operator was asking
+    # the bot to find. Naming them is the answer.
+    wanted_states = {
+        state
+        for word, state in (
+            ("faulty", "FAULT"),
+            ("fault", "FAULT"),
+            ("offline", "OFFLINE"),
+            ("down", "OFFLINE"),
+            ("error", "FAULT"),
+            ("not functioning", "FAULT"),
+            ("unhealthy", "FAULT"),
+        )
+        if word in text
+    }
+    if wanted_states and re.search(r"\bwhich\b|\blist\b|\bshow\b|\bname\b|\bany\b", text):
+        hits: list[str] = []
+        for branch, modules in sorted(summary.branches.items()):
+            bad = [
+                label
+                for label, state in modules.items()
+                if state in wanted_states
+                and (category_key is None or label == _LABELS.get(category_key))
+            ]
+            if bad:
+                hits.append(f"{branch} ({', '.join(sorted(bad))})")
+        label = " / ".join(sorted(s.lower() for s in wanted_states))
+        if not hits:
+            return f"No device is currently {label} in your authorized scope."
+        shown = "; ".join(hits[:20])
+        suffix = f" (showing first 20 of {len(hits)})" if len(hits) > 20 else ""
+        return f"{len(hits)} branch(es) with a {label} module: {shown}{suffix}."
+
     if "distribution" in text or "across all device categories" in text:
         return "; ".join(
             f"{item.label}: {_count_phrase(item)}" for item in summary.categories.values()

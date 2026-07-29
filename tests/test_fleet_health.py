@@ -84,3 +84,26 @@ def test_formats_rankings_and_distribution() -> None:
     assert "Gateway:" in format_fleet_health(
         summary, "What is the health distribution across all device categories?"
     )
+
+
+def test_faulty_devices_are_named_not_merely_counted() -> None:
+    """"Which specific device is currently faulty?" was answered with a demand for a
+    device id. The per-branch states were already computed and never surfaced."""
+    snapshots = {
+        "d1": _snap("BOI-A", active="true", cctv_sts="FAULT"),
+        "d2": _snap("BOI-B", active="true", cctv_sts="ONLINE"),
+        "d3": _snap("BOI-C", active="false", cctv_sts="N/A"),
+    }
+    summary = aggregate_fleet_health(snapshots, ["d1", "d2", "d3"])
+
+    faulty = format_fleet_health(summary, "Which specific device is currently faulty?")
+    assert "BOI-A" in faulty and "CCTV" in faulty
+    assert "BOI-B" not in faulty
+
+    offline = format_fleet_health(summary, "List all devices that are currently offline")
+    assert "BOI-C" in offline and "BOI-A" not in offline
+
+
+def test_nothing_faulty_says_so_rather_than_listing_nothing() -> None:
+    summary = aggregate_fleet_health({"d1": _snap("BOI-A", active="true")}, ["d1"])
+    assert "No device is currently" in format_fleet_health(summary, "which devices are faulty?")

@@ -25,6 +25,7 @@ ALLOWED_INTENTS = (
     "user_directory",
     "audit_log",
     "hierarchy_info",
+    "unavailable_telemetry",
     "device_inventory",
     "alarm_detail",
     "subsystem_status",

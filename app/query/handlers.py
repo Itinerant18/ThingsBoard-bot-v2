@@ -1,7 +1,8 @@
 import logging
+import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from app.auth.scope_resolver import resolved_scope
 from app.auth.tb_acl import PermissionCheckUnavailable, SessionExpired, caller_identity
@@ -292,6 +293,95 @@ class CctvFleet:
             format_cctv_fleet(fleet, intent.raw_question),
             {"cctv_fleet": fleet.to_dict()},
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+
+
+class UnavailableTelemetry:
+    """Says plainly that a metric is not collected.
+
+    Grading 769 live answers found the bot NEVER declines — asked for firmware
+    versions or S-Vault disk usage it substituted some unrelated real number, or
+    demanded a device id that would not have produced the data either. Deflecting is
+    worse than refusing: an operator can act on "we don't collect that" and cannot
+    act on a confidently wrong figure.
+    """
+
+    intent = "unavailable_telemetry"
+
+    # The subsystem acronyms an operator asks about. Six lines beats deflecting to an
+    # unrelated device count, and the mapping already exists in the extractor.
+    _GLOSSARY: ClassVar[dict[str, str]] = {
+        "ias": "IAS — Integrated Alarm System",
+        "bas": "BAS — Burglar (Intrusion) Alarm System",
+        "fas": "FAS — Fire Alarm System",
+        "tls": "TLS — Time Lock System",
+        "acs": "ACS — Access Control System",
+        "nbg": "NBG — National Banking Group, the regional tier above a zone",
+        "fgmo": "FGMO — Field General Manager's Office, used interchangeably with NBG",
+        "zo": "ZO — Zonal Office",
+        "boi": "BOI — Bank of India",
+        "tat": "TAT — Turnaround Time, how long an alarm stayed open",
+        "nvr": "NVR — Network Video Recorder",
+        "dvr": "DVR — Digital Video Recorder",
+    }
+
+    # What the question asked for -> what we would need to start collecting.
+    _SUBJECTS = (
+        ("firmware", "firmware versions"),
+        ("uptime", "per-device uptime history"),
+        ("disk utilization", "S-Vault disk usage"),
+        ("s-vault", "S-Vault contents"),
+        ("svault", "S-Vault contents"),
+        ("ingestion rate", "message ingestion rate"),
+        ("serial number", "device serial numbers"),
+        ("patch level", "OS patch levels"),
+        ("last seen online", "per-device last-seen timestamps"),
+        ("model number", "device model numbers"),
+    )
+
+    async def can_handle(self, intent: ExtractedIntent) -> bool:
+        return intent.name == self.intent
+
+    async def handle(self, intent: ExtractedIntent, ctx: RequestContext) -> Answer:
+        text = intent.raw_question.lower()
+
+        if "stand for" in text or "what does" in text:
+            hits = [
+                meaning
+                for token, meaning in self._GLOSSARY.items()
+                if re.search(rf"\b{token}\b", text)
+            ]
+            if hits:
+                return Answer("; ".join(hits) + ".", {"glossary": hits})
+
+        if re.search(r"\bwhat should i do\b|\bprocedure for\b|\bhow do i\b", text):
+            return Answer(
+                "I report what the fleet is doing; I do not hold your response "
+                "procedures or runbooks. I can tell you the current state — which "
+                "devices are faulty or offline, which alarms are open and for how "
+                "long — to inform whatever your procedure says.",
+                {"unavailable": "operational runbooks"},
+            )
+
+        if re.search(r"\btrend\b|\bcompared to yesterday\b|\bover (?:the )?(?:past|last)\b", text):
+            return Answer(
+                "I answer on the current state, not on change over time — this build "
+                "has no trend layer, so I would be inventing the comparison. Device "
+                "history is being recorded, so trends are possible later; today I can "
+                "give you the position right now.",
+                {"unavailable": "historical trend"},
+            )
+
+        subject = next(
+            (label for needle, label in self._SUBJECTS if needle in text),
+            "that measurement",
+        )
+        return Answer(
+            f"I do not hold {subject} — it is not among the telemetry this fleet "
+            "publishes to ThingsBoard, so I would be guessing. I can answer on device "
+            "health, CCTV recording and inventory, alarms, users, audit activity and "
+            "the branch hierarchy.",
+            {"unavailable": subject},
         )
 
 

@@ -214,3 +214,48 @@ async def test_the_new_openers_do_not_capture_existing_questions(
     question: str, expected: str
 ) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        # Real questions that answered "Name a device to check." — the operator was
+        # asked to supply the very identifier they asked the bot to find.
+        ("Which specific device is currently faulty?", "fleet_health"),
+        ("List all devices that are currently faulty", "fleet_health"),
+        ("Which CCTV cameras are currently faulty?", "cctv_fleet"),
+        ("Which CCTV channels are currently disconnected?", "cctv_fleet"),
+        ("Are there any Gateway system errors right now?", "fleet_health"),
+        # Telemetry the fleet does not publish — say so instead of demanding an id.
+        ("What is the current firmware version of all Gateway devices?", "unavailable_telemetry"),
+        ("What is the current uptime of all CCTV devices?", "unavailable_telemetry"),
+        ("What is the current disk utilization across all S-Vault nodes?", "unavailable_telemetry"),
+        # Not telemetry at all.
+        ("What does IAS stand for?", "unavailable_telemetry"),
+        ("What should I do if a CCTV camera is disconnected?", "unavailable_telemetry"),
+        ("What is the faulty device count trend over 30 days?", "unavailable_telemetry"),
+    ],
+)
+async def test_fleet_shaped_questions_no_longer_demand_a_device_id(
+    question: str, expected: str
+) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        # The fallback sits between the fleet handlers and the metric branches, so it
+        # must not swallow what already worked on either side of that seam.
+        ("Which branches are currently under the ODISHA zone?", "hierarchy_info"),
+        ("Which branch is visible on the map?", "device_inventory"),
+        ("battery voltage of liluah", "battery_voltage"),
+        ("what is the cctv status of liluah", "cctv_status"),
+        ("Is the CCTV system healthy?", "fleet_health"),
+        ("Are there any active unresolved alarms?", "alarm_detail"),
+    ],
+)
+async def test_the_fleet_fallback_does_not_capture_working_questions(
+    question: str, expected: str
+) -> None:
+    assert (await KeywordIntentExtractor().extract(question)).name == expected

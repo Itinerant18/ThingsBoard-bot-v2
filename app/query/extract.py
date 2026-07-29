@@ -163,6 +163,34 @@ _CONVERSATIONAL_RE = re.compile(
 )
 
 
+# Telemetry the fleet does not publish. Answering these with a demand for a device
+# id was doubly wrong: the question is fleet-wide, AND naming a device would not have
+# produced the data either. Saying so is the only honest answer.
+_NOT_HELD_RE = re.compile(
+    # Definitions and runbooks are not telemetry, and trends need a history layer
+    # this build does not have. All three were answered with an unrelated live
+    # number, which is the deflection the audit called out.
+    r"\bstand for\b|\bwhat does \w+ mean\b|\bwhat should i do\b|\bprocedure for\b"
+    r"|\bhow do i (?:fix|reset|reconnect|escalate)\b|\btrend over\b|\btrend of\b"
+    r"|\bcompared to yesterday\b|\bover (?:the )?(?:past|last) \d+ days?\b"
+    r"|\bfirmware\b|\buptime\b|\bdisk utilization\b|\bs-?vault\b|\bingestion rate\b"
+    r"|\bserial number\b|\bpatch level\b|\blast seen online\b|\bmodel number\b"
+)
+
+# Fleet-shaped phrasing. A metric question carrying one of these and naming no branch
+# is about the whole estate, so sending it to the single-device path produced
+# "Name a device to check." for the very thing the operator asked the bot to find.
+_ASKS_ACROSS_THE_FLEET = re.compile(
+    r"\ball (?:the )?\w+ devices?\b|\bacross (?:all|the entire)\b|\bevery branch\b"
+    # "which CCTV cameras", "which specific camera channel" — the noun is rarely the
+    # word straight after "which", and it is usually plural.
+    r"|\bwhich\b[^?]{0,24}\b(?:devices?|cameras?|channels?|branches?|nvrs?|dvrs?)\b"
+    r"|\blist all\b|\bare there any\b|\bfleet[- ]wide\b|\bentire (?:network|estate|fleet)\b"
+    r"|\bwhat (?:is|are) the (?:health|operational|connectivity) status of\b"
+    r"|\bpercentage of devices\b|\bin the inventory\b"
+)
+
+
 def _is_fleet_cctv_question(text: str, cctv: bool) -> bool:
     if not cctv and not any(word in text for word in _RECORDING_WORDS):
         return False
@@ -322,6 +350,17 @@ class KeywordIntentExtractor:
         elif _is_fleet_cctv_question(text, cctv):
             intent = "cctv_fleet"
         elif _is_fleet_health_question(text):
+            intent = "fleet_health"
+        elif _NOT_HELD_RE.search(text):
+            # Say plainly that this is not collected. These reached the metric path
+            # and were answered with a request for a device id that would not have
+            # produced the data either.
+            intent = "unavailable_telemetry"
+        elif _ASKS_ACROSS_THE_FLEET.search(text) and cctv:
+            intent = "cctv_fleet"
+        elif _ASKS_ACROSS_THE_FLEET.search(text) and re.search(
+            r"\bdevice|\bhealth|\bfault|\boffline|\berror|\bhealthy", text
+        ):
             intent = "fleet_health"
         elif bas and has("zone"):
             intent = "bas_zone_info"

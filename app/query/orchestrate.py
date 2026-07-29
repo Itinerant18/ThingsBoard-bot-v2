@@ -18,6 +18,7 @@ from app.query.handlers import (
     GlobalOverview,
     HierarchyInfo,
     MetricHandler,
+    UnavailableTelemetry,
     UserDirectory,
 )
 from app.query.uuids import is_uuid as _is_uuid
@@ -62,6 +63,7 @@ class QueryOrchestrator:
             GlobalOverview(),
             DeviceInventory(),
             HierarchyInfo(),
+            UnavailableTelemetry(),
             FleetHealth(),
             CctvFleet(),
             UserDirectory(),
