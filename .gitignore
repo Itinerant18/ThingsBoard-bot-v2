@@ -33,10 +33,9 @@ json_data/
 # Audit measurement artifacts. Each run holds all 769 live answers — real branch
 # names, device UUIDs and, in the verdict write-ups, the very outside-tenant email
 # addresses the disclosure checks flag as leaks. Measurement output, not source.
-faq-audit-*.jsonl
-faq-audit-verdict*.md
-codex-faq-*.jsonl
-codex-faq-verdict.md
+# Suffix-agnostic: a .jsonl.bak slipped past an earlier `faq-audit-*.jsonl`.
+faq-audit-*
+codex-faq-*
 
 # Audit harnesses carry a live ThingsBoard bearer token inline, and the token file
 # is the token. Every runner that has existed so far — mine and the ones OpenCode
