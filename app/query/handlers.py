@@ -33,8 +33,11 @@ from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet, rank_cctv_br
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.disclosure import REFUSAL
 from app.query.fleet_health import (
+    _LISTING_RE,
     aggregate_fleet_health,
+    category_listing,
     format_fleet_health,
+    normalize_category,
     rank_branches,
 )
 from app.query.hierarchy_answers import (
@@ -133,6 +136,37 @@ async def _hierarchy_answer(
     return Answer(text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}])
 
 
+async def _category_listing(
+    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
+) -> Answer | None:
+    """"Show me all IAS devices" — the branches where one subsystem is deployed.
+
+    Reached from the inventory handlers, which is where the extractor sends these.
+    Guarded on the question naming a subsystem AND asking to list, so the fleet-state
+    read stays off the path of every other inventory question.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix:
+        return None
+    if normalize_category(None, question) is None or not _LISTING_RE.search(question):
+        return None
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
+    listed = category_listing(
+        aggregate_fleet_health(snapshots, scoped.tb_device_ids), intent.raw_question
+    )
+    if listed is None:
+        return None
+    text, rows = listed
+    return Answer(
+        text,
+        {"category_branches": rows[:50], "count": len(rows)},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -170,6 +204,9 @@ class GlobalOverview:
         hierarchy = await _hierarchy_answer(intent, ctx, scoped)
         if hierarchy is not None:
             return hierarchy
+        listing = await _category_listing(intent, ctx, scoped)
+        if listing is not None:
+            return listing
         count = len(scoped.tb_device_ids)
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
         if not states:
@@ -301,6 +338,9 @@ class DeviceInventory:
         hierarchy = await _hierarchy_answer(intent, ctx, scoped)
         if hierarchy is not None:
             return hierarchy
+        listing = await _category_listing(intent, ctx, scoped)
+        if listing is not None:
+            return listing
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""

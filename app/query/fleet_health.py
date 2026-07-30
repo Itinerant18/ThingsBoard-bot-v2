@@ -166,6 +166,36 @@ def normalize_category(value: str | None, question: str = "") -> str | None:
     return None
 
 
+_LISTING_RE = re.compile(r"\b(?:show|list|which|what)\b.*\bdevices?\b|\bdevices?\b.*\blist\b")
+
+
+def category_listing(
+    summary: FleetHealthSummary, question: str
+) -> tuple[str, list[dict[str, object]]] | None:
+    """Branches where one subsystem is deployed, for "show me all IAS devices".
+
+    Five such questions fell through to the 98-branch inventory dump. No ThingsBoard
+    call is needed and no device `type` filter would even be right: a branch is ONE
+    device and its subsystems are attributes on it, so "all IAS devices" means "the
+    branches where IAS is installed" — which aggregate_fleet_health already recorded
+    in summary.branches while counting them.
+    """
+    key = normalize_category(None, question)
+    if key is None or not _LISTING_RE.search(question.lower()):
+        return None
+    label = _LABELS[key]
+    rows: list[dict[str, object]] = [
+        {"branch": branch, "state": states[label]}
+        for branch, states in sorted(summary.branches.items())
+        if label in states
+    ]
+    if not rows:
+        return f"No {label} device is deployed in your authorized scope.", []
+    shown = ", ".join(f"{r['branch']} ({r['state']})" for r in rows[:15])
+    more = f" (showing first 15 of {len(rows)})" if len(rows) > 15 else ""
+    return f"{len(rows)} branch(es) with a {label} device: {shown}{more}.", rows
+
+
 def _count_phrase(item: CategoryHealth) -> str:
     text = (
         f"{item.healthy} healthy, {item.faulty} faulty, "

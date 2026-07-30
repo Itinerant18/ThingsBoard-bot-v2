@@ -85,3 +85,50 @@ def test_branch_and_zone_dimensions_still_win_where_they_should() -> None:
 
     assert _group_dimension("which branch has the most alarms?") == "branch"
     assert _group_dimension("which zone has the most alarms?") == "zone"
+
+
+# --- "Show me all IAS devices" -----------------------------------------------
+
+CATEGORY_SUMMARY = FleetHealthSummary(
+    categories={},
+    branches={
+        "BOI-A": {"Gateway": "ONLINE", "IAS": "ONLINE", "CCTV": "OFFLINE"},
+        "BOI-B": {"Gateway": "OFFLINE", "IAS": "FAULT"},
+        "BOI-C": {"Gateway": "ONLINE"},  # no IAS deployed
+    },
+    open_alerts=0,
+)
+
+
+def test_lists_only_branches_where_the_subsystem_is_deployed() -> None:
+    from app.query.fleet_health import category_listing
+
+    text, rows = category_listing(CATEGORY_SUMMARY, "Show me all IAS devices")
+    assert text.startswith("2 branch(es) with a IAS device:")
+    assert [r["branch"] for r in rows] == ["BOI-A", "BOI-B"]
+    assert "BOI-C" not in text
+
+
+def test_gateway_listing_covers_every_branch() -> None:
+    from app.query.fleet_health import category_listing
+
+    text, rows = category_listing(CATEGORY_SUMMARY, "Show me all Gateway devices")
+    assert len(rows) == 3
+
+
+def test_a_category_with_nothing_deployed_says_so() -> None:
+    from app.query.fleet_health import category_listing
+
+    text, rows = category_listing(CATEGORY_SUMMARY, "Show me all FAS devices")
+    assert text == "No FAS device is deployed in your authorized scope."
+    assert rows == []
+
+
+def test_non_listing_questions_are_left_to_the_health_answer() -> None:
+    from app.query.fleet_health import category_listing
+
+    # A health question about the same category must NOT become a listing.
+    assert category_listing(CATEGORY_SUMMARY, "How many IAS devices are offline?") is None
+    assert category_listing(CATEGORY_SUMMARY, "Is the IAS healthy?") is None
+    # No category named at all.
+    assert category_listing(CATEGORY_SUMMARY, "Show me all devices") is None
