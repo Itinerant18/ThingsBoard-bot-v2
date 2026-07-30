@@ -39,7 +39,6 @@ from app.query.fleet_health import (
 )
 from app.query.hierarchy_answers import (
     area_device_filter,
-    find_area,
     format_hierarchy_answer,
     load_scoped_tree,
 )
@@ -97,6 +96,43 @@ def _name_the_branch(answer: Answer, intent: ExtractedIntent) -> Answer:
     return answer
 
 
+_ASKS_HIERARCHY = re.compile(
+    r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b|\bhierarch|\bbelongs? to\b"
+    r"|\bsub-?areas?\b"
+)
+# "branch" alone is not enough — "battery voltage of Liluah branch" is a metric
+# question. It counts only when the question is also asking to count or to list.
+_BRANCH_LISTING = re.compile(
+    r"\bbranch(?:es)?\b.*\b(?:how many|list|all|count|per|each|total)\b"
+    r"|\b(?:how many|list|all|count|per|each|total)\b.*\bbranch(?:es)?\b"
+)
+
+
+async def _hierarchy_answer(
+    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
+) -> Answer | None:
+    """format_hierarchy_answer's reply, when the question is really about structure.
+
+    Zone and region questions reach three different handlers depending on how the
+    extractor classifies them — "how many branches under the WEST II zone" landed on
+    GlobalOverview and got a device count, "list all branches" landed on
+    DeviceInventory and got the 98-name dump. The formatter could answer both all
+    along. Rather than teach each handler the hierarchy, they all ask here first.
+    """
+    if ctx.db is None or not ctx.tenant.prefix:
+        return None
+    question = intent.raw_question.lower()
+    if not (_ASKS_HIERARCHY.search(question) or _BRANCH_LISTING.search(question)):
+        return None
+    tree = await load_scoped_tree(
+        ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
+    )
+    if not tree.nodes:
+        return None
+    text, structured = format_hierarchy_answer(tree, intent.raw_question)
+    return Answer(text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}])
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -131,6 +167,9 @@ class GlobalOverview:
                 "Your token is not mapped to a customer, so I cannot retrieve fleet data."
             )
         scoped = await self._scope_fn(ctx)
+        hierarchy = await _hierarchy_answer(intent, ctx, scoped)
+        if hierarchy is not None:
+            return hierarchy
         count = len(scoped.tb_device_ids)
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
         if not states:
@@ -256,30 +295,12 @@ class DeviceInventory:
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
-        # Hierarchy questions keep landing HERE rather than on HierarchyInfo, because
-        # the extractor reads "how many branches under the EAST zone" as an inventory
-        # question. format_hierarchy_answer has always known how to answer them — it
-        # was simply never reached. Delegate instead of growing a second, worse copy
-        # of it in this handler.
-        tree = (
-            await load_scoped_tree(
-                ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
-            )
-            if ctx.db is not None
-            else None
-        )
-        if tree is not None and tree.nodes:
-            names_an_area = find_area(tree, intent.raw_question) is not None
-            asks_hierarchy = re.search(
-                r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b|\bhierarch|\bbelongs? to\b"
-                r"|\bunder\b|\bper branch\b|\bsub-?areas?\b",
-                question,
-            )
-            if names_an_area or asks_hierarchy:
-                text, structured = format_hierarchy_answer(tree, intent.raw_question)
-                return Answer(
-                    text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}]
-                )
+        # Same delegation GlobalOverview makes: the extractor sends structure
+        # questions to whichever handler it feels like, so both ask the hierarchy
+        # before answering with an inventory.
+        hierarchy = await _hierarchy_answer(intent, ctx, scoped)
+        if hierarchy is not None:
+            return hierarchy
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""

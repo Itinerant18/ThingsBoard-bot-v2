@@ -70,3 +70,41 @@ def test_no_shared_prefix_means_nothing_is_stripped() -> None:
     t.nodes["B2"] = Node("B2", "ZOH", "BRANCH", 3, "DOBSON ROAD", True, "d2")
     t.nodes["B3"] = Node("B3", "WEST", "BRANCH", 3, "NASIK CITY", True, "d3")
     assert find_area(t, "status of LILUAH MAIN").node_id == "B1"
+
+
+# --- Routing: both fleet handlers must ask the hierarchy first ----------------
+
+
+def test_hierarchy_trigger_fires_for_the_run5_fall_throughs() -> None:
+    from app.query.handlers import _ASKS_HIERARCHY, _BRANCH_LISTING
+
+    def fires(q: str) -> bool:
+        q = q.lower()
+        return bool(_ASKS_HIERARCHY.search(q) or _BRANCH_LISTING.search(q))
+
+    for q in (
+        "How many branches are currently under the WEST II zone?",
+        "What is the current device count per zone?",
+        "Which FGMO region currently has the most branches under monitoring?",
+        "List all branches in the system",
+        "How many branches are currently being monitored?",
+        "How many devices are at each branch?",
+        "How many total branches are there across all FGMO regions?",
+    ):
+        assert fires(q), q
+
+
+def test_hierarchy_trigger_does_not_hijack_metric_or_fleet_questions() -> None:
+    from app.query.handlers import _ASKS_HIERARCHY, _BRANCH_LISTING
+
+    def fires(q: str) -> bool:
+        q = q.lower()
+        return bool(_ASKS_HIERARCHY.search(q) or _BRANCH_LISTING.search(q))
+
+    for q in (
+        "What is the battery voltage of Liluah branch?",
+        "How many devices are offline right now?",
+        "Is the CCTV at BALLYBAZAR recording?",
+        "What is the overall fleet health?",
+    ):
+        assert not fires(q), q
