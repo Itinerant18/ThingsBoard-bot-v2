@@ -112,7 +112,7 @@ def test_lists_only_branches_where_the_subsystem_is_deployed() -> None:
 def test_gateway_listing_covers_every_branch() -> None:
     from app.query.fleet_health import category_listing
 
-    text, rows = category_listing(CATEGORY_SUMMARY, "Show me all Gateway devices")
+    _, rows = category_listing(CATEGORY_SUMMARY, "Show me all Gateway devices")
     assert len(rows) == 3
 
 
