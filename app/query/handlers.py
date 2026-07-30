@@ -165,6 +165,22 @@ class DeviceInventory:
             )
         scoped = await self._scope_fn(ctx)
         question = intent.raw_question.lower()
+        # The gate already resolved a branch name out of the question and the
+        # orchestrator put it on the intent — this handler was throwing it away and
+        # printing the whole inventory. "Is there a NASIK branch currently active?"
+        # answered with 104 branch names, NASIK among them.
+        # Membership is tested on tb_device_ids because that is the ACL-filtered list.
+        if intent.node_name and intent.device_id in set(scoped.tb_device_ids):
+            return Answer(
+                f"Yes — {intent.node_name} is one of the {len(scoped.tb_device_ids)} "
+                "branches in your authorized scope.",
+                {
+                    "branch": intent.node_name,
+                    "device_id": intent.device_id,
+                    "in_scope": True,
+                },
+                [{"type": "hierarchy", "resource": "scoped-branches"}],
+            )
         if "region" in question and "active" in question:
             if ctx.tenant.region:
                 return Answer(
