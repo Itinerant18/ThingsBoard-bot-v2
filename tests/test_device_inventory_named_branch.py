@@ -68,3 +68,45 @@ async def test_a_branch_outside_scope_does_not_get_a_yes() -> None:
     answer = await _handler().handle(intent, _ctx())  # type: ignore[arg-type]
 
     assert "BOI-BAS" not in answer.text
+
+
+# --- MetricHandler must say WHICH branch it answered about -------------------
+
+
+def _answer(text, structured=None):
+    from app.query.contracts import Answer
+
+    return Answer(text, structured or {})
+
+
+def test_metric_answer_is_prefixed_with_the_named_branch() -> None:
+    from app.query.handlers import _name_the_branch
+
+    intent = ExtractedIntent(
+        name="cctv_state",
+        device_id="dev-1",
+        node_name="BOI-BALLYBAZAR",
+        raw_question="What is the status of CCTV channel 15 at BALLYBAZAR?",
+    )
+    out = _name_the_branch(_answer("CCTV status is FAULT; 16/16 cameras online."), intent)
+
+    assert out.text.startswith("BOI-BALLYBAZAR — ")
+    assert out.structured["scoped_to"] == "BOI-BALLYBAZAR"
+
+
+def test_no_prefix_when_the_branch_is_already_named() -> None:
+    from app.query.handlers import _name_the_branch
+
+    intent = ExtractedIntent(name="cctv_state", node_name="BOI-BALLYBAZAR")
+    out = _name_the_branch(_answer("BOI-BALLYBAZAR is healthy."), intent)
+
+    assert out.text == "BOI-BALLYBAZAR is healthy."
+
+
+def test_no_prefix_on_an_error_answer() -> None:
+    from app.query.handlers import _name_the_branch
+
+    intent = ExtractedIntent(name="cctv_state", node_name="BOI-BALLYBAZAR")
+    out = _name_the_branch(_answer("Could not reach ThingsBoard.", {"error": "x"}), intent)
+
+    assert out.text == "Could not reach ThingsBoard."

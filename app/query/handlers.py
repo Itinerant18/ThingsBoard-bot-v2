@@ -74,6 +74,24 @@ def _requested_device(intent: ExtractedIntent, scoped_ids: list[str]) -> tuple[s
     return (requested, False) if requested in scoped_ids else (None, True)
 
 
+def _name_the_branch(answer: Answer, intent: ExtractedIntent) -> Answer:
+    """Prefix a per-device answer with the branch the question named.
+
+    "What is the status of CCTV channel 15 at BALLYBAZAR?" answered "CCTV status is
+    FAULT; 16/16 cameras online." The device WAS resolved correctly — the answer just
+    never said which one, so it is indistinguishable from a fleet-wide reply. Same
+    reasoning as _scoped_to, which the fleet handlers already use and MetricHandler
+    never did.
+    """
+    if not intent.node_name or answer.structured.get("error"):
+        return answer
+    if intent.node_name.lower() in answer.text.lower():
+        return answer
+    answer.text = f"{intent.node_name} — {answer.text}"
+    answer.structured.setdefault("scoped_to", intent.node_name)
+    return answer
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -929,7 +947,7 @@ class MetricHandler:
             await client.close()
         raw.setdefault("device_id", device_id)
 
-        return _format_metric(intent, build_snapshot(raw), device_id)
+        return _name_the_branch(_format_metric(intent, build_snapshot(raw), device_id), intent)
 
 
 async def _history_answer(
