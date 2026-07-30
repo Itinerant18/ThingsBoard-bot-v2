@@ -51,7 +51,31 @@ async def resolved_scope(
 
     allowed = await authorized_device_ids(settings, tenant.user_token or "", redis)
 
-    permitted = [d for d in local.tb_device_ids if str(d) in allowed]
+    # Filter the branch NAMES by the same ACL, not just the device ids. The two lists
+    # are positionally parallel (see branch_scope), so one pass keeps them aligned.
+    if len(local.branch_node_ids) == len(local.tb_device_ids):
+        pairs = [
+            (node_id, device_id)
+            for node_id, device_id in zip(local.branch_node_ids, local.tb_device_ids, strict=True)
+            if str(device_id) in allowed
+        ]
+        permitted_nodes = [node_id for node_id, _ in pairs]
+        permitted = [device_id for _, device_id in pairs]
+    else:
+        # branch_scope always emits parallel lists, so this is a corrupt cache entry
+        # or a caller building ScopedBranches by hand. Positional pairing is then
+        # meaningless: pairing anyway would attach the WRONG branch name to a device,
+        # and zip(strict=True) would turn it into a 500 for every chat request.
+        # Keep the device filter and surrender the names — a scope answer that lists
+        # no branches is recoverable; one that lists the wrong branches is a leak.
+        logger.error(
+            "[TB-ACL] branch/device lists are not parallel (%d vs %d); dropping branch "
+            "names for this request rather than risking a mismatched pairing",
+            len(local.branch_node_ids),
+            len(local.tb_device_ids),
+        )
+        permitted = [d for d in local.tb_device_ids if str(d) in allowed]
+        permitted_nodes = []
     dropped = len(local.tb_device_ids) - len(permitted)
     if dropped:
         # Expected whenever a prefix spans multiple TB customers; worth seeing,
@@ -64,11 +88,29 @@ async def resolved_scope(
             dropped,
         )
 
-    # Branch nodes are intentionally left as-is: they are containers used for name
-    # resolution, and a branch is only ever answerable through its devices, which
-    # are now filtered. Narrowing containers here would break zone-level questions
-    # for users who legitimately hold only some devices under a zone.
-    return ScopedBranches(branch_node_ids=local.branch_node_ids, tb_device_ids=permitted)
+    # Branch nodes used to be returned unfiltered, on the reasoning that they are only
+    # containers for name resolution and a branch is answerable solely through its
+    # devices. That reasoning was wrong on both halves.
+    #
+    # These are LEAF nodes, not containers — leaf node_id IS the branch name — and
+    # they were being answered directly: DeviceInventory replied "You have 104 branch
+    # device(s) in scope: ..." straight from this list while ThingsBoard authorized
+    # 100, naming BOI-BAS, BOI-BAHALDA, BOI-R-BAZAR and BOI-LOHARDAGA-CC to a Bank of
+    # India head-office caller who holds none of them. Confirmed in the 2026-07-30
+    # head-office audit. The unauthorized-branch gate in branch_names.py built its
+    # "safe to mention" set from the same unfiltered list, so it would not have
+    # refused those four either.
+    #
+    # hierarchy_answers.load_scoped_tree already re-applied the ACL for its own
+    # answers, which is the tell: a boundary that each consumer has to remember to
+    # re-apply is one that will be missed. Applying it here makes every consumer
+    # correct by construction, and load_scoped_tree's second pass stays as defence in
+    # depth — it is idempotent.
+    #
+    # Zone-level questions are unaffected: containers live in the hierarchy tree and
+    # are rebuilt from whichever leaves survive, so a zone the caller still holds
+    # devices under keeps its name.
+    return ScopedBranches(branch_node_ids=permitted_nodes, tb_device_ids=permitted)
 
 
 __all__ = ["PermissionCheckUnavailable", "resolved_scope"]

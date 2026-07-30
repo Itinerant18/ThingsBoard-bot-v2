@@ -143,7 +143,12 @@ class GlobalOverview:
 
 class DeviceInventory:
     """Device list, scoped to the caller's hierarchy. Leaf node_id == the branch/device
-    name, so branch_node_ids is the authorized name list — no TB call needed."""
+    name, so branch_node_ids is the authorized name list — no TB call needed.
+
+    That last clause was only true after resolved_scope started applying ThingsBoard's
+    ACL to branch_node_ids as well. Before that it named 104 branches to a caller
+    ThingsBoard authorized for 100.
+    """
 
     intent = "device_inventory"
 

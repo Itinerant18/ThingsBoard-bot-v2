@@ -32,6 +32,19 @@ LOCAL_IDS = [f"dev-{i:03d}" for i in range(104)]
 TB_AUTHORIZED = frozenset(LOCAL_IDS[:100])
 EXCESS = set(LOCAL_IDS[100:])
 
+# branch_node_ids is POSITIONALLY PARALLEL to tb_device_ids — leaf node_id is the
+# branch name. The fixture used to pass a single name against 104 device ids, which
+# is not a shape branch_scope can produce; that mismatch is precisely what let the
+# name leak go unnoticed while the device assertions passed.
+# The last four are the real branches named to a head-office caller in production.
+BRANCH_NAMES = [f"BOI-BRANCH-{i:03d}" for i in range(100)] + [
+    "BOI-BAS",
+    "BOI-BAHALDA",
+    "BOI-R-BAZAR",
+    "BOI-LOHARDAGA-CC",
+]
+EXCESS_NAMES = set(BRANCH_NAMES[100:])
+
 SETTINGS = Settings(database_url="postgresql+asyncpg://unused/unused")
 
 TENANT = TenantContext(
@@ -49,7 +62,9 @@ def local_and_tb(monkeypatch):
     """Local hierarchy returns 104; ThingsBoard authorizes 100."""
 
     async def fake_branch_scope(session, prefix, scope, redis):
-        return ScopedBranches(branch_node_ids=["BOI-MALDATOWN"], tb_device_ids=list(LOCAL_IDS))
+        return ScopedBranches(
+            branch_node_ids=list(BRANCH_NAMES), tb_device_ids=list(LOCAL_IDS)
+        )
 
     async def fake_acl(settings, token, redis):
         return TB_AUTHORIZED
@@ -115,7 +130,9 @@ async def test_unconfirmed_permissions_fail_closed(monkeypatch) -> None:
     """TB unreachable must refuse, never fall back to the unchecked local scope."""
 
     async def fake_branch_scope(session, prefix, scope, redis):
-        return ScopedBranches(branch_node_ids=["b"], tb_device_ids=list(LOCAL_IDS))
+        return ScopedBranches(
+            branch_node_ids=list(BRANCH_NAMES), tb_device_ids=list(LOCAL_IDS)
+        )
 
     async def boom(settings, token, redis):
         raise PermissionCheckUnavailable("thingsboard unreachable")
@@ -364,3 +381,30 @@ async def test_no_prefix_yields_empty_scope_without_calling_thingsboard(monkeypa
     )
     scoped = await resolved_scope(None, None, unmapped, SETTINGS)  # type: ignore[arg-type]
     assert scoped.tb_device_ids == []
+
+
+@pytest.mark.asyncio
+async def test_branch_names_are_narrowed_too_not_just_device_ids(local_and_tb) -> None:
+    """The 2026-07-30 head-office audit leak.
+
+    resolved_scope applied ThingsBoard's ACL to tb_device_ids and returned
+    branch_node_ids untouched, on the reasoning that a branch is only reachable
+    through its devices. DeviceInventory answered the name list directly:
+
+        "You have 104 branch device(s) in scope: ... BOI-BAS ..."
+
+    to a caller ThingsBoard authorized for 100. Every device assertion above passed
+    while four branch NAMES the caller does not hold were disclosed.
+    """
+    scoped = await resolved_scope(None, None, TENANT, SETTINGS)  # type: ignore[arg-type]
+
+    assert len(scoped.branch_node_ids) == 100
+    assert not set(scoped.branch_node_ids) & EXCESS_NAMES, (
+        "branch names outside the ThingsBoard ACL were disclosed"
+    )
+    # Still parallel after filtering, which is what lets AlarmDetail zip them to
+    # label alarms with a branch name.
+    assert len(scoped.branch_node_ids) == len(scoped.tb_device_ids)
+    assert dict(zip(scoped.branch_node_ids, scoped.tb_device_ids, strict=True))[
+        BRANCH_NAMES[0]
+    ] == LOCAL_IDS[0]

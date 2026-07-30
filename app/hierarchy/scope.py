@@ -172,7 +172,10 @@ async def branch_scope(
     # include the scope. A prefix-only key would let a customer-wide user's
     # cached full inventory leak to a region-scoped user (and vice versa).
     scope_part = f"{'E' if scope.explicit else 'G'}:{normalize(scope.name) if scope.name else '*'}"
-    cache_key = f"branch_scope:{prefix}:{scope_part}"
+    # v2: entries written before branch_node_ids and tb_device_ids were made
+    # positionally parallel are not safe to zip, and resolved_scope now does exactly
+    # that. Bumping the key retires them rather than trusting a 60s TTL.
+    cache_key = f"branch_scope:v2:{prefix}:{scope_part}"
     # The cache is an optimization; the DB below is authoritative. A cache outage must
     # not break the scope gate (and therefore all of chat), so read failures fall
     # through. Failing open here is safe: it costs a query, never widens scope.
@@ -220,8 +223,18 @@ async def branch_scope(
     leaf_nodes = [n for n in all_nodes if n.is_leaf]
     filtered_leaves = filter_branches(scope, leaf_nodes, all_nodes, ancestor_paths)
 
-    branch_node_ids = [n.node_id for n in filtered_leaves]
-    tb_device_ids = [str(n.tb_device_id) for n in filtered_leaves if n.tb_device_id]
+    # Both lists must describe the SAME leaves, in the same order. They used to be
+    # built independently — tb_device_ids skipped leaves with no device while
+    # branch_node_ids kept them — so the two drifted apart by exactly the device-less
+    # leaves. Every consumer that pairs them by position then had to guard on equal
+    # length and silently gave up when they differed (see AlarmDetail), and
+    # resolved_scope could not filter one using the other at all.
+    #
+    # A leaf with no ThingsBoard device is not answerable and not authorizable, so
+    # dropping it from both is also the fail-closed choice.
+    usable_leaves = [n for n in filtered_leaves if n.tb_device_id]
+    branch_node_ids = [n.node_id for n in usable_leaves]
+    tb_device_ids = [str(n.tb_device_id) for n in usable_leaves]
 
     # Cache for 60 seconds; a write failure is not worth failing the request over.
     import json

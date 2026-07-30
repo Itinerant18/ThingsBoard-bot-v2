@@ -151,7 +151,12 @@ class TestScopedBranchesWiring:
 
         async def fake_branch_scope(session, prefix, scope, redis):
             captured["scope"] = scope
-            return ScopedBranches(branch_node_ids=["b1"], tb_device_ids=["d1", "d2"])
+            # Parallel by construction, as branch_scope emits them: leaf "b1" owns
+            # device "d1", leaf "b2" owns "d2". ThingsBoard authorizes only d1, so
+            # b2 must disappear from the names as well as d2 from the devices.
+            return ScopedBranches(
+                branch_node_ids=["b1", "b2"], tb_device_ids=["d1", "d2"]
+            )
 
         async def fake_acl(settings, token, redis):
             return frozenset({"d1"})  # ThingsBoard authorizes only d1
