@@ -263,6 +263,31 @@ def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _shared_prefix_token(tree: ScopedTree) -> str:
+    """The customer token every leaf name starts with, e.g. "boi" in "BOI-DOBSON".
+
+    Nobody types it. "Which ZO does DOBSON branch belong to?" normalizes to
+    "which does dobson belong to" and never matched "boi dobson", so every reverse
+    lookup fell through to the whole-hierarchy dump. Derived from the names in hand
+    rather than taken as a parameter, so it stays correct for a bank whose branches
+    are not prefixed at all — then there is no shared token and nothing is stripped.
+    """
+    firsts = {
+        _norm(node.display_name).split(" ", 1)[0]
+        for node in tree.nodes.values()
+        if node.is_leaf and _norm(node.display_name)
+    }
+    return firsts.pop() if len(firsts) == 1 else ""
+
+
+def _match_names(node: Node, shared: str) -> list[str]:
+    name = _norm(node.display_name)
+    if shared and name.startswith(f"{shared} ") and name != shared:
+        # Both forms: operators say "DOBSON", exports say "BOI-DOBSON".
+        return [name, name[len(shared) + 1 :]]
+    return [name]
+
+
 def find_area(tree: ScopedTree, question: str, pool: Sequence[Node] | None = None) -> Node | None:
     """The tree node a question names, matched on the distinguishing words of its name.
 
@@ -271,15 +296,13 @@ def find_area(tree: ScopedTree, question: str, pool: Sequence[Node] | None = Non
     asked = _norm(question)
     if not asked:
         return None
+    shared = _shared_prefix_token(tree)
     best: Node | None = None
+    best_len = 0
     for node in pool if pool is not None else tree.nodes.values():
-        name = _norm(node.display_name)
-        if (
-            name
-            and re.search(rf"\b{re.escape(name)}\b", asked)
-            and (best is None or len(name) > len(_norm(best.display_name)))
-        ):
-            best = node
+        for name in _match_names(node, shared):
+            if name and re.search(rf"\b{re.escape(name)}\b", asked) and len(name) > best_len:
+                best, best_len = node, len(name)
     return best
 
 
@@ -355,8 +378,12 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
 
     # "What are all the FGMO regions?" — a listing with no area named.
     if re.search(r"\b(?:all|list|what are|which are|name)\b", text) and re.search(
-        r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b", text
+        r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b|\bbranch(?:es)?\b", text
     ) and find_area(tree, question) is None:
+        if re.search(r"\bbranch(?:es)?\b", text):
+            # "List all branches in the system" fell through to the whole-hierarchy
+            # summary because this listing only recognised grouping levels.
+            return f"{len(branches)} branch(es): {_names(branches)}.", structured
         wanted = top if re.search(r"\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b", text) else areas
         if not wanted:
             return "No grouping level is recorded in your authorized scope.", structured
@@ -367,6 +394,26 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
 
     area = find_area(tree, question)
     counting = "how many" in text or "count" in text
+
+    # "What is the current device count per zone?" answered "3 area(s) in your
+    # authorized scope" — the count of areas, not a count per area. Roll the leaves up
+    # to each area instead. Pure traversal of the tree already loaded; no new data.
+    if re.search(r"\b(?:per|each|by|breakdown by|across)\b", text) and re.search(
+        r"\bzones?\b|\bregions?\b|\bareas?\b|\bnbg\b|\bfgmo\b|\bcircles?\b", text
+    ):
+        pool = top if re.search(r"\bregions?\b|\bnbg\b|\bfgmo\b", text) else areas
+        if pool:
+            counts = sorted(
+                ((n.display_name, len(tree.descendant_leaves(n.node_id))) for n in pool),
+                key=lambda pair: (-pair[1], pair[0]),
+            )
+            structured["per_area"] = dict(counts)
+            return (
+                "Branches per area: "
+                + ", ".join(f"{name} {count}" for name, count in counts)
+                + ".",
+                structured,
+            )
 
     # What is being ASKED FOR, not merely which words appear. Operators call an NBG
     # region "the EAST zone", so "which branches are under the EAST zone" says "zone"

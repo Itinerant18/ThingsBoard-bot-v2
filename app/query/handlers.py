@@ -256,13 +256,11 @@ class DeviceInventory:
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
-        # The question may name an AREA rather than a branch. area_device_filter cannot
-        # help: it only engages when the question also says "zone"/"region"/"ZO", and
-        # people do not talk that way — "Is there a NASIK branch active?" names the ZO
-        # NASIK zone while calling it a branch. Six such questions were answered with
-        # the full 98-branch dump, NASIK among the names.
-        # This is the fallback handler, so matching here catches them regardless of how
-        # the extractor classified the question.
+        # Hierarchy questions keep landing HERE rather than on HierarchyInfo, because
+        # the extractor reads "how many branches under the EAST zone" as an inventory
+        # question. format_hierarchy_answer has always known how to answer them — it
+        # was simply never reached. Delegate instead of growing a second, worse copy
+        # of it in this handler.
         tree = (
             await load_scoped_tree(
                 ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
@@ -270,22 +268,17 @@ class DeviceInventory:
             if ctx.db is not None
             else None
         )
-        area = find_area(tree, intent.raw_question) if tree is not None else None
-        if tree is not None and area is not None and not area.is_leaf:
-            root = tree.root
-            if root is None or area.node_id != root.node_id:
-                under = tree.descendant_leaves(area.node_id)
-                listed = ", ".join(node.display_name for node in under[:10])
-                more = " (showing first 10)" if len(under) > 10 else ""
+        if tree is not None and tree.nodes:
+            names_an_area = find_area(tree, intent.raw_question) is not None
+            asks_hierarchy = re.search(
+                r"\bzones?\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b|\bhierarch|\bbelongs? to\b"
+                r"|\bunder\b|\bper branch\b|\bsub-?areas?\b",
+                question,
+            )
+            if names_an_area or asks_hierarchy:
+                text, structured = format_hierarchy_answer(tree, intent.raw_question)
                 return Answer(
-                    f"Yes — {area.display_name} is in your authorized scope, with "
-                    f"{len(under)} branch(es): {listed}{more}.",
-                    {
-                        "area": area.display_name,
-                        "branches": [node.display_name for node in under],
-                        "count": len(under),
-                    },
-                    [{"type": "hierarchy", "resource": "scoped-branches"}],
+                    text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}]
                 )
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
