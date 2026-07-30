@@ -144,3 +144,18 @@ def test_geo_and_per_branch_triggers() -> None:
               "list all branches in the system"):
         assert not _ASKS_PER_BRANCH.search(q), q
         assert not _ASKS_GEO.search(q), q
+
+
+def test_default_coordinate_is_not_reported_as_a_branch_location() -> None:
+    # 51 of 98 branches report 20.5937, 78.9629 — the geographic centre of India,
+    # ThingsBoard's default for a device with no position. Listing that as the
+    # branch's location invents data.
+    from collections import Counter
+
+    markers = [{"latitude": 20.5937, "longitude": 78.9629} for _ in range(51)]
+    markers += [{"latitude": 22.6 + i / 100, "longitude": 88.4} for i in range(4)]
+    tally = Counter((m["latitude"], m["longitude"]) for m in markers)
+    placed = [m for m in markers if tally[(m["latitude"], m["longitude"])] <= 5]
+
+    assert len(placed) == 4, "the shared default must not count as a location"
+    assert all(m["latitude"] != 20.5937 for m in placed)

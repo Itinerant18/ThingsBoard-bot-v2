@@ -374,12 +374,39 @@ class DeviceInventory:
                 )
             suffix = " (showing first 20)" if len(markers) > 20 else ""
             if _ASKS_COORDS.search(question):
+                # 51 of 98 branches report 20.5937, 78.9629 - the geographic centre of
+                # India, ThingsBoard's default when a device has no real position.
+                # Listing it as the branch's location is inventing data, so separate
+                # the branches that actually carry a position from the ones that do
+                # not, and say which is which.
+                # ponytail: "shared by more than 5 branches" identifies the default
+                # without hardcoding it, so it still holds for another tenant whose
+                # default differs. Tighten if a bank genuinely has 6 branches at one
+                # address.
+                tally = Counter((m["latitude"], m["longitude"]) for m in markers)
+                placed = [m for m in markers if tally[(m["latitude"], m["longitude"])] <= 5]
+                unplaced = len(markers) - len(placed)
+                if not placed:
+                    return Answer(
+                        f"None of the {len(markers)} branches in your scope carries its own "
+                        "coordinates - they all report the same default position, so I "
+                        "cannot give you a per-branch location.",
+                        {"map_markers": markers, "placed": 0, "unplaced": unplaced},
+                        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+                    )
                 listed = "; ".join(
-                    f"{m['branch']} {m['latitude']}, {m['longitude']}" for m in markers[:20]
+                    f"{m['branch']} {m['latitude']}, {m['longitude']}" for m in placed[:20]
+                )
+                more = " (showing first 20)" if len(placed) > 20 else ""
+                tail = (
+                    f" The other {unplaced} report a shared default position rather than "
+                    "their own, so no coordinate is recorded for them."
+                    if unplaced
+                    else ""
                 )
                 return Answer(
-                    f"Coordinates for {len(markers)} branch(es): {listed}{suffix}.",
-                    {"map_markers": markers},
+                    f"Coordinates for {len(placed)} branch(es): {listed}{more}.{tail}",
+                    {"map_markers": markers, "placed": len(placed), "unplaced": unplaced},
                     [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
                 )
             summary = ", ".join(
@@ -659,6 +686,11 @@ class HierarchyInfo:
                 "Your token is not mapped to a customer, so I cannot retrieve the hierarchy."
             )
         scoped = await self._scope_fn(ctx)
+        # Fourth handler to need this. "Show me the branch report" is classified
+        # hierarchy_info and got the tree summary, when it wants a number per branch.
+        per_branch = await _per_branch_counts(intent, ctx, scoped)
+        if per_branch is not None:
+            return per_branch
         tree = await load_scoped_tree(
             ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
         )
