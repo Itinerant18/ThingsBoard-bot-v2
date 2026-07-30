@@ -1,7 +1,7 @@
 # FAQ correctness + disclosure audit — prompt for OpenCode
 
 Run only after the GitHub Actions run for the latest commit is green. Replace
-`<PASTE_FRESH_TOKEN>` below with a live ThingsBoard bearer token for a **Bank of
+the token slot in **Step 1** below with a live ThingsBoard bearer token for a **Bank of
 India HEAD OFFICE user** (they last ~2.5 hours — mint it immediately before
 starting, because the collection takes a while).
 
