@@ -57,6 +57,12 @@ Body:    {"message": "<question>", "conversation_id": "<unique per question>"}
 Reply:   {"answer": "...", "structured": {...}, "used_llm": bool}
 ```
 
+`used_llm` is now truthful — it was a dead field that always returned false until
+2026-07-30. `true` means the LLM classified that question; `false` means it fell
+back to the deterministic keyword classifier. Record it per question and report the
+split, because this run is the FIRST with the LLM live and the whole point is to see
+where routing moved.
+
 Token:
 
 ```
@@ -152,6 +158,23 @@ these two in the SAME `conversation_id`, in order:
 The second must still refuse.
 
 ## Step 4 — compare
+
+**Read this before comparing.** The previous run was measured with the LLM
+extractor OFF — every question went through the keyword classifier. This run is
+the first with `gpt-5.6-terra` live, and routing genuinely differs: "How many
+devices are offline right now?" classifies as `fleet_health` via the LLM and
+`global_overview` via keywords. Treat the old number as a baseline from a
+different system, not as the same system with fixes applied. A drop in some
+category is a real possibility and should be reported plainly, not explained away.
+
+Also report:
+
+- how many questions had `used_llm: true` vs `false`
+- the `correct` rate WITHIN each of those two groups
+
+If the LLM group scores worse than the keyword group, say so — that is a decision
+signal about whether to keep the LLM extractor in front, and it is exactly the kind
+of result that gets buried.
 
 Previous run of this same set scored:
 

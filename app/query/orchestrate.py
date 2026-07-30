@@ -151,6 +151,11 @@ class QueryOrchestrator:
                 break
         if answer is None:
             answer = Answer("I could not map that question to a supported fleet query.")
+        # The API has always exposed `used_llm` and nothing ever set it, so every reply
+        # claimed False — including the ones the LLM had just routed. Report what
+        # actually happened, so an audit can separate LLM-routed answers from
+        # keyword-routed ones instead of guessing.
+        answer.used_llm = intent.via_llm
 
         if session_id:
             await memory.record_turn(ctx.redis, session_id, question, answer.text)

@@ -167,6 +167,7 @@ class LlmIntentExtractor:
                 device_id=_str_or_none(data.get("device_id")),
                 subsystem=_str_or_none(data.get("subsystem")),
                 raw_question=question,
+                via_llm=True,
             )
         except Exception:  # noqa: BLE001 — deliberate: extractor must never raise into chat
             # Fail closed to the deterministic keyword classifier, which now also

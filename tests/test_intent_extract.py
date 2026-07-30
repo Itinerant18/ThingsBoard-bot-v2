@@ -299,3 +299,22 @@ async def test_reverse_lookup_phrasings_and_branch_master_declines(
     question: str, expected: str
 ) -> None:
     assert (await KeywordIntentExtractor().extract(question)).name == expected
+
+
+async def test_via_llm_distinguishes_a_real_llm_call_from_a_silent_fallback() -> None:
+    # The extractor swallows every exception, so a dead API key produces the same
+    # shape of answer as a working one. via_llm is the only thing that tells them
+    # apart, and it is what the API's `used_llm` field now reports.
+    llm_routed = await _extractor(
+        '{"intent": "fleet_health", "device_id": null, "subsystem": null}'
+    ).extract("how many devices are offline")
+    assert llm_routed.via_llm is True
+
+    fell_back = await _extractor(exc=RuntimeError("401 invalid api key")).extract(
+        "how many devices are offline"
+    )
+    assert fell_back.via_llm is False, "keyword fallback must not claim the LLM ran"
+
+    # An unroutable intent name is also a fallback, not an LLM success.
+    bad_intent = await _extractor('{"intent": "not_a_real_intent"}').extract("hello there")
+    assert bad_intent.via_llm is False

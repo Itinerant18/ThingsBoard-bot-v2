@@ -21,6 +21,11 @@ class ExtractedIntent:
     # Set when the question asks about a PERIOD rather than the current value; the
     # metric handler then answers from device_telemetry instead of a live TB fetch.
     window: "TimeWindow | None" = None
+    # True only when the LLM actually classified this question. LlmIntentExtractor
+    # swallows every exception and falls back to the keyword classifier, so a broken
+    # API key looks exactly like a working one from the outside — this is the field
+    # that tells them apart.
+    via_llm: bool = False
 
 
 @dataclass
