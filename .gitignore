@@ -56,3 +56,4 @@ graphify-out/
 # real bank and branch names for the live fleet; .swarm is a scratch database.
 keys_output.txt
 .swarm/
+ruvector.db
