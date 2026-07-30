@@ -321,3 +321,110 @@ def format_fleet_health(
     if summary.open_alerts:
         answer += f". The fleet snapshots report {summary.open_alerts} open {_plural(summary.open_alerts, 'alert')}"
     return answer + "."
+
+
+# --- Superlative ranking ----------------------------------------------------
+#
+# "Which branch currently has the worst overall health?" was answered with the FLEET
+# summary — "Across 98 branches, 153 monitored modules: 68 are healthy (44.4%)..." —
+# which never names a branch. 34 of 63 superlative questions in the 2026-07-30
+# head-office audit came back as an unranked list or an aggregate.
+#
+# The per-branch detail was already computed: aggregate_fleet_health fills
+# summary.branches with {branch: {module: state}} and then only ever sums it. This
+# ranks those rows instead. Deterministic sort, no LLM pass — the answer can only
+# contain numbers that are in the rows.
+
+# Direction words, kept separate from polarity. "Which branch has the HIGHEST number
+# of offline devices?" asks for the WORST branch — treating "highest" as a best-case
+# word ranked it ascending and answered with the healthiest branch. Whether a
+# superlative means max or min depends on the metric being good or bad, so the two
+# are resolved independently.
+_MAX = ("most", "highest", "largest", "greatest", "maximum")
+_MIN = ("fewest", "lowest", "least", "smallest", "minimum")
+_WORST = ("worst", "poorest")
+_BEST = ("best", "healthiest")
+
+
+def branch_rows(summary: FleetHealthSummary) -> list[dict[str, object]]:
+    """Per-branch module counts — the detail the aggregate throws away."""
+    rows: list[dict[str, object]] = []
+    for branch, modules in summary.branches.items():
+        states = list(modules.values())
+        total = len(states)
+        healthy = sum(1 for s in states if s == NormalizedState.ONLINE.value)
+        offline = sum(1 for s in states if s == NormalizedState.OFFLINE.value)
+        faulty = sum(1 for s in states if s == NormalizedState.FAULT.value)
+        rows.append(
+            {
+                "branch": branch,
+                "total": total,
+                "healthy": healthy,
+                "offline": offline,
+                "faulty": faulty,
+                # Modules in UNKNOWN count against health: a branch whose gateway never
+                # reported is not healthy, it is unmeasured, and scoring it 100% would
+                # put silent branches at the top of a "best" list.
+                "health_pct": round(healthy / total * 100, 1) if total else 0.0,
+            }
+        )
+    return rows
+
+
+def rank_branches(
+    summary: FleetHealthSummary, question: str
+) -> tuple[str, list[dict[str, object]]] | None:
+    """(sentence, ranked rows) when the question asks for a single extreme branch.
+
+    None when it does not, so the caller falls through to the aggregate answer — the
+    fleet summary is still the right reply to "what is the overall fleet health?".
+    """
+    text = question.lower()
+    if not any(word in text for word in ("branch", "device", "site")):
+        return None
+
+    # Metric first, because it decides which direction a superlative points.
+    if "offline" in text or "down" in text:
+        key, unit, bad = "offline", "offline", True
+    elif "fault" in text or "problem" in text:
+        key, unit, bad = "faulty", "faulty", True
+    else:
+        key, unit, bad = "health_pct", None, False
+
+    asks_worst = any(w in text for w in _WORST)
+    asks_best = any(w in text for w in _BEST)
+    if asks_worst and asks_best:
+        # "Which branch is best and which is worst?" — two questions. Naming one
+        # branch would answer half of it and look like the whole answer.
+        return None
+    if asks_worst:
+        descending = bad
+    elif asks_best:
+        descending = not bad
+    elif any(w in text for w in _MAX):
+        descending = True
+    elif any(w in text for w in _MIN):
+        descending = False
+    else:
+        return None
+
+    rows = [row for row in branch_rows(summary) if row["total"]]
+    if not rows:
+        return None
+    # Name as tiebreak so the same question always returns the same branch.
+    rows.sort(key=lambda r: (r[key], r["branch"]), reverse=descending)
+    top = rows[0]
+
+    if key == "health_pct":
+        label = "best" if descending else "worst"
+        sentence = (
+            f"{top['branch']} has the {label} overall health: "
+            f"{top['healthy']} of {top['total']} modules healthy "
+            f"({top['health_pct']}%), {top['offline']} offline, {top['faulty']} faulty."
+        )
+    else:
+        label = "most" if descending else "fewest"
+        sentence = (
+            f"{top['branch']} has the {label} {unit} modules: {top[key]} of {top['total']}."
+        )
+    return sentence, rows

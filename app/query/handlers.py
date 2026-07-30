@@ -32,7 +32,11 @@ from app.query.audit import (
 from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.disclosure import REFUSAL
-from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
+from app.query.fleet_health import (
+    aggregate_fleet_health,
+    format_fleet_health,
+    rank_branches,
+)
 from app.query.hierarchy_answers import (
     area_device_filter,
     find_area,
@@ -336,8 +340,22 @@ class FleetHealth:
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, device_ids)
         snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
         summary = aggregate_fleet_health(snapshots, device_ids)
-        text = format_fleet_health(summary, intent.raw_question, intent.subsystem)
         scoped_to = _scoped_to(intent, requested, area_name)
+        # "Which branch has the worst overall health?" was answered with the fleet
+        # aggregate, which names no branch at all. Rank the per-branch rows the
+        # aggregate was already computing and discarding. Returns None for questions
+        # that are genuinely about the fleet, so the summary below still serves them.
+        ranked = rank_branches(summary, intent.raw_question)
+        if ranked is not None:
+            sentence, rows = ranked
+            if scoped_to:
+                sentence = f"{scoped_to} — {sentence}"
+            return Answer(
+                sentence,
+                {"area": area_name, "ranked_branches": rows[:10], "fleet_health": summary.to_dict()},
+                [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+            )
+        text = format_fleet_health(summary, intent.raw_question, intent.subsystem)
         if scoped_to:
             text = f"{scoped_to} — {text}"
         return Answer(
