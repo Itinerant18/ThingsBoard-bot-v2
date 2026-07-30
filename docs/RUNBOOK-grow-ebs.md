@@ -1,5 +1,16 @@
 # Runbook — grow the EC2 root volume
 
+## Status: DONE on 2026-07-30
+
+Executed against `i-0f62805f9ef0d89bb`. Volume 10 -> 30 GiB in the console, then
+`growpart /dev/xvda 1` and `resize2fs /dev/xvda1` on the host. Root went from
+8.6G/58% used with 3.6G free, to 28G/18% used with 23G free. No downtime, no
+container restart — all four containers stayed up and `/health` never stopped
+returning `{"status":"ok"}`.
+
+Keep this runbook: the same steps apply to the next host, and the gotchas below are
+the reason it took one pass instead of three.
+
 ## Why
 
 The root volume is 10 GiB. Every deploy runs a two-stage `docker build` (Node
