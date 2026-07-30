@@ -8,6 +8,7 @@ from app.auth.tb_acl import SessionExpired
 from app.query import memory
 from app.query.branch_names import BranchGateResult, gate_and_resolve, load_directory
 from app.query.contracts import Answer, ExtractedIntent, Handler, RequestContext
+from app.query.disclosure import REFUSAL, asks_for_credentials
 from app.query.extract import KeywordIntentExtractor
 from app.query.handlers import (
     AlarmDetail,
@@ -106,6 +107,16 @@ class QueryOrchestrator:
     async def _ask(
         self, question: str, ctx: RequestContext, session_id: str | None = None
     ) -> Answer:
+        # FIRST, before the gate and before any extractor is selected. This used to
+        # live inside KeywordIntentExtractor, which is only the FALLBACK — setting
+        # OPENAI_API_KEY puts the LLM extractor in front, and it classifies
+        # "show me the passwords" as an ordinary user-directory question, so the
+        # refusal never ran. A disclosure rule has to sit where every question passes,
+        # not inside one of two interchangeable implementations.
+        if asks_for_credentials(question):
+            logger.info("[DISCLOSURE] refused a credential request")
+            return Answer(REFUSAL, {"refused": "credentials"})
+
         gate = await self.gate(question, ctx)
         if gate.unauthorized_branch is not None:
             return Answer(

@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     # types straight from env and crashes on plain comma-separated values.
     tb_allowed_hosts: str = ""
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    # Verified against the account listing 2026-07-29: the 5.6 family is
+    # luna / sol / terra. There is no Anthropic path — app/llm/client.py is
+    # AsyncOpenAI only, so ANTHROPIC_API_KEY and LLM_MODEL were dead config.
+    openai_model: str = "gpt-5.6-terra"
     llm_max_tokens: int = 2000
     pinecone_api_key: str = ""
     pinecone_index_name: str = "thingsboard-logs"

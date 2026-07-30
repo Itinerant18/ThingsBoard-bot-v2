@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from typing import Any, cast
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from app.config import Settings
 
@@ -26,15 +26,30 @@ class LlmClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> str:
-        kwargs: dict[str, Any] = {}
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-        response = await self.client.chat.completions.create(
-            model=self._settings.openai_model,
-            messages=cast(Iterable[Any], [{"role": "system", "content": system}, *messages]),
-            max_tokens=max_tokens or self._settings.llm_max_tokens,
-            **kwargs,
-        )
+        # gpt-5.x rejects `max_tokens` ("Unsupported parameter ... Use
+        # 'max_completion_tokens' instead") and rejects any temperature other than the
+        # default. Sending either produced a 400 on EVERY call — and because
+        # LlmIntentExtractor catches all exceptions to stay fail-closed, the LLM would
+        # have looked enabled while silently never running. Try the modern parameter
+        # first and fall back for older models, rather than pinning to one generation.
+        limit = max_tokens or self._settings.llm_max_tokens
+        base: dict[str, Any] = {
+            "model": self._settings.openai_model,
+            "messages": cast(
+                Iterable[Any], [{"role": "system", "content": system}, *messages]
+            ),
+        }
+        try:
+            response = await self.client.chat.completions.create(
+                **base, max_completion_tokens=limit
+            )
+        except BadRequestError:
+            kwargs: dict[str, Any] = {}
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = await self.client.chat.completions.create(
+                **base, max_tokens=limit, **kwargs
+            )
         return response.choices[0].message.content or ""
 
     async def judge(self, question: str, answer: str) -> str:

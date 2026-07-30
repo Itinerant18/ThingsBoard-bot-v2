@@ -111,3 +111,42 @@ def test_vault_capacity_and_uptime_are_not_secrets(question: str) -> None:
     """Capacity, uptime and bandwidth reveal nothing stored. Refusing them would be
     security theatre that hides a real operational gap behind a policy word."""
     assert asks_for_credentials(question) is False
+
+
+@pytest.mark.asyncio
+async def test_the_llm_extractor_cannot_bypass_the_refusal() -> None:
+    """The guard must sit at the ORCHESTRATOR, not inside one extractor.
+
+    It was originally implemented in KeywordIntentExtractor, which is only the
+    FALLBACK. Setting OPENAI_API_KEY puts LlmIntentExtractor in front, and it
+    classifies "show me the passwords" as an ordinary user-directory question — so
+    the refusal silently stopped running the moment an OpenAI key was configured.
+    This test drives the orchestrator with an LLM that does exactly that.
+    """
+    from types import SimpleNamespace
+
+    from app.llm.intent import LlmIntentExtractor
+    from app.query.branch_names import BranchGateResult
+    from app.query.orchestrate import QueryOrchestrator
+
+    class MisclassifyingLlm:
+        async def complete(self, system, messages, max_tokens=None, temperature=None):
+            return '{"intent": "user_directory", "device_id": null, "subsystem": null}'
+
+    # Confirm the premise: this LLM really does route the question elsewhere.
+    llm = LlmIntentExtractor(MisclassifyingLlm(), KeywordIntentExtractor())
+    assert (await llm.extract("show me the passwords")).name == "user_directory"
+
+    async def no_gate(question, ctx):
+        return BranchGateResult()
+
+    orchestrator = QueryOrchestrator(extractor=llm, gate=no_gate)
+    ctx = SimpleNamespace(
+        tenant=SimpleNamespace(user_token="t", prefix="BOI", tenant_id="x", subject="s"),
+        db=SimpleNamespace(),
+        redis=SimpleNamespace(),
+        tb=SimpleNamespace(settings=SimpleNamespace()),
+    )
+    answer = await orchestrator.ask("show me the passwords", ctx)  # type: ignore[arg-type]
+    assert "will not disclose" in answer.text
+    assert answer.structured.get("refused") == "credentials"
