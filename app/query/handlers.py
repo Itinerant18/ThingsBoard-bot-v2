@@ -167,6 +167,49 @@ async def _category_listing(
     )
 
 
+_ASKS_GEO = re.compile(
+    r"\bmap\b|\blatitude\b|\blongitude\b|\bcoordinates?\b|\bgeograph"
+    r"|\bwhere are\b.*\blocated\b|\blocated\b.*\bgeograph"
+)
+_ASKS_COORDS = re.compile(r"\blatitude\b|\blongitude\b|\bcoordinates?\b")
+# "How many devices are at each branch?" and "show me the branch report" want a
+# number PER branch. The hierarchy answered with a count OF branches.
+_ASKS_PER_BRANCH = re.compile(
+    r"\b(?:how many|number of|count)\b.*\bdevices?\b.*\b(?:each|per|every)\b.*\bbranch"
+    r"|\bdevices?\b.*\b(?:per|each)\b.*\bbranch"
+    r"|\bbranch report\b|\bper-?branch (?:report|summary|breakdown)\b"
+)
+
+
+async def _per_branch_counts(
+    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
+) -> Answer | None:
+    """Modules deployed at each branch.
+
+    aggregate_fleet_health already walks every branch and records its modules while
+    summing them, so this is the same read the fleet answers make - no extra call.
+    """
+    if not ctx.tenant.prefix or not _ASKS_PER_BRANCH.search(intent.raw_question.lower()):
+        return None
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
+    summary = aggregate_fleet_health(snapshots, scoped.tb_device_ids)
+    counts = [(branch, len(modules)) for branch, modules in summary.branches.items()]
+    counts.sort(key=lambda pair: (-pair[1], pair[0]))
+    rows = [{"branch": branch, "modules": modules} for branch, modules in counts]
+    if not rows:
+        return None
+    shown = ", ".join(f"{r['branch']}: {r['modules']}" for r in rows[:20])
+    more = f" (showing first 20 of {len(rows)})" if len(rows) > 20 else ""
+    return Answer(
+        f"Modules deployed per branch: {shown}{more}.",
+        {"per_branch_modules": rows},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -201,6 +244,9 @@ class GlobalOverview:
                 "Your token is not mapped to a customer, so I cannot retrieve fleet data."
             )
         scoped = await self._scope_fn(ctx)
+        per_branch = await _per_branch_counts(intent, ctx, scoped)
+        if per_branch is not None:
+            return per_branch
         hierarchy = await _hierarchy_answer(intent, ctx, scoped)
         if hierarchy is not None:
             return hierarchy
@@ -292,7 +338,10 @@ class DeviceInventory:
                 {"active_regions": [], "count": 0, "customer_wide": True},
                 [{"type": "authorization-scope", "resource": "current-user"}],
             )
-        if "map" in question:
+        # Widened beyond the literal word "map": "what is the latitude and longitude
+        # for each branch" and "where are the branches located geographically" both
+        # went to the hierarchy summary instead, which names no coordinate at all.
+        if _ASKS_GEO.search(question):
             states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
             markers = []
             for device_id, raw in states.items():
@@ -323,15 +372,27 @@ class DeviceInventory:
                     {"map_markers": []},
                     [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
                 )
+            suffix = " (showing first 20)" if len(markers) > 20 else ""
+            if _ASKS_COORDS.search(question):
+                listed = "; ".join(
+                    f"{m['branch']} {m['latitude']}, {m['longitude']}" for m in markers[:20]
+                )
+                return Answer(
+                    f"Coordinates for {len(markers)} branch(es): {listed}{suffix}.",
+                    {"map_markers": markers},
+                    [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+                )
             summary = ", ".join(
                 f"{marker['branch']} ({marker['status']})" for marker in markers[:20]
             )
-            suffix = " (showing first 20)" if len(markers) > 20 else ""
             return Answer(
                 f"Branches visible on the map: {summary}{suffix}.",
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
+        per_branch = await _per_branch_counts(intent, ctx, scoped)
+        if per_branch is not None:
+            return per_branch
         # Same delegation GlobalOverview makes: the extractor sends structure
         # questions to whichever handler it feels like, so both ask the hierarchy
         # before answering with an inventory.

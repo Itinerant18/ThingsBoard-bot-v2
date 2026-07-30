@@ -118,3 +118,29 @@ def test_parent_chain_excludes_the_branch_itself() -> None:
     text, _ = format_hierarchy_answer(t, "Which ZO does DOBSON branch belong to?")
     assert text.count("BOI-DOBSON") == 1, text
     assert text.rstrip(".").endswith("ZO HOWRAH")
+
+
+# --- Group C: geography and per-branch counts --------------------------------
+
+
+def test_geo_and_per_branch_triggers() -> None:
+    from app.query.handlers import _ASKS_COORDS, _ASKS_GEO, _ASKS_PER_BRANCH
+
+    # Coordinates: reached, and recognised as wanting the numbers.
+    for q in ("what is the latitude and longitude for each branch?",
+              "where are the branches located geographically?",
+              "show me the branch map"):
+        assert _ASKS_GEO.search(q), q
+    assert _ASKS_COORDS.search("what is the latitude and longitude for each branch?")
+    assert not _ASKS_COORDS.search("show me the branch map")
+
+    # A number PER branch, not a count OF branches.
+    for q in ("how many devices are at each branch?", "show me the branch report"):
+        assert _ASKS_PER_BRANCH.search(q), q
+
+    # Must not hijack the neighbouring questions.
+    for q in ("how many branches are there in total?",
+              "what is the battery voltage of liluah?",
+              "list all branches in the system"):
+        assert not _ASKS_PER_BRANCH.search(q), q
+        assert not _ASKS_GEO.search(q), q
