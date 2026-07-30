@@ -213,6 +213,19 @@ def _structured(alarms: list[AlarmRecord]) -> list[dict[str, Any]]:
 # The dimensions an alarm can be grouped by. Every one is already carried on
 # AlarmRecord; only the grouping was missing.
 _DIMENSIONS: tuple[tuple[str, str], ...] = (
+    # Alarm TYPE was missing while branch/zone/region/severity were all present, so
+    # "what is the most common alarm type?", "most frequent error type", "which
+    # device category has the highest alarm rate" and six more fell past the whole
+    # aggregation block to the listing fallback and came back as the newest single
+    # alarm. The grouping code needed no change - _group_alarms getattrs the
+    # dimension straight off AlarmRecord, which has carried alarm_type all along.
+    (
+        (
+            r"\balarm type\b|\berror type\b|\bissue type\b|\bfault type\b"
+            r"|\bdevice categor(?:y|ies)\b|\bper type\b|\bby type\b|\bwhich type\b"
+        ),
+        "alarm_type",
+    ),
     (r"\bper branch\b|\bby branch\b|\beach branch\b|\bwhich branch\b", "branch"),
     (r"\bper zone\b|\bby zone\b|\beach zone\b|\bwhich zone\b", "zone"),
     (
@@ -477,7 +490,7 @@ def format_alarm_answer(
         groups = _group_alarms(selected, dimension)
         if not groups:
             return (
-                f"No matching alarm carries a {dimension} right now.",
+                f"No matching alarm carries a {dimension.replace("_", " ")} right now.",
                 {"alarms": _structured(selected)},
             )
         group_counts = {name: len(rows) for name, rows in groups.items()}
@@ -491,7 +504,7 @@ def format_alarm_answer(
             return answer, {"grouped": group_counts, "alarms": _structured(members)}
         ranked_groups = sorted(group_counts.items(), key=lambda kv: (-kv[1], kv[0]))
         return (
-            f"Alarms by {dimension}: "
+            f"Alarms by {dimension.replace("_", " ")}: "
             + ", ".join(f"{name} {n}" for name, n in ranked_groups[:20])
             + ".",
             {"grouped": dict(ranked_groups), "alarms": _structured(selected)},

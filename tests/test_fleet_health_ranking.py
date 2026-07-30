@@ -64,3 +64,24 @@ def test_answer_only_uses_numbers_from_the_rows() -> None:
                str(top["health_pct"]), str(int(top["health_pct"]))}
     for number in re.findall(r"\d+(?:\.\d+)?", sentence):
         assert number in allowed, f"{number} is not a value from the ranked row"
+
+
+# --- Alarm type was a missing grouping dimension, not missing code ------------
+
+
+def test_alarm_type_is_a_grouping_dimension() -> None:
+    from app.query.alarm_answers import _group_dimension
+
+    for question in (
+        "what is the most common alarm type?",
+        "what is the most frequent error type currently occurring?",
+        "which device category has the highest alarm rate?",
+    ):
+        assert _group_dimension(question) == "alarm_type", question
+
+
+def test_branch_and_zone_dimensions_still_win_where_they_should() -> None:
+    from app.query.alarm_answers import _group_dimension
+
+    assert _group_dimension("which branch has the most alarms?") == "branch"
+    assert _group_dimension("which zone has the most alarms?") == "zone"
