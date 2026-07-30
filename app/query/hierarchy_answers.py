@@ -362,7 +362,10 @@ def format_hierarchy_answer(tree: ScopedTree, question: str) -> tuple[str, dict[
                     tree.ancestors.get(area.node_id, ()) if area.is_leaf else (),
                     key=lambda nid: tree.nodes[nid].level if nid in tree.nodes else 0,
                 )
-                if node_id in tree.nodes
+                # The closure table stores each node as its own ancestor, so the chain
+                # ended with the branch itself: "BOI-BALLYBAZAR sits under BANK OF
+                # INDIA -> NBG EAST -> ZO HOWRAH -> BOI-BALLYBAZAR".
+                if node_id in tree.nodes and node_id != area.node_id
             ]
             if not area.is_leaf and area.parent_id in tree.nodes:
                 chain = [tree.nodes[area.parent_id]]

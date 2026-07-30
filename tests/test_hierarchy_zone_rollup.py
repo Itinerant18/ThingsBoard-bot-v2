@@ -108,3 +108,13 @@ def test_hierarchy_trigger_does_not_hijack_metric_or_fleet_questions() -> None:
         "What is the overall fleet health?",
     ):
         assert not fires(q), q
+
+
+def test_parent_chain_excludes_the_branch_itself() -> None:
+    # The closure table stores each node as its own ancestor, so the chain read
+    # "BOI-DOBSON sits under ... -> ZO HOWRAH -> BOI-DOBSON".
+    t = _tree()
+    t.ancestors["B2"] = {"ZOH", "EAST", "HO", "B2"}
+    text, _ = format_hierarchy_answer(t, "Which ZO does DOBSON branch belong to?")
+    assert text.count("BOI-DOBSON") == 1, text
+    assert text.rstrip(".").endswith("ZO HOWRAH")
