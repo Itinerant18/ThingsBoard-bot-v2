@@ -14,7 +14,7 @@ exactly. Key names are case-sensitive and some contain spaces (e.g. `BATTERY LOW
 | `GET /api/auth/user` | resolve current user/customer from a token |
 | `GET /api/customer/{id}/devices`, `GET /api/customer/devices` | device list per customer (TB ACL applies) |
 | `GET /api/tenant/devices` | full tenant device inventory |
-| `GET /api/customers`, `GET /api/tenant/users` | customer + user sync |
+| `GET /api/customers`, `GET /api/user/users` | customer + user sync |
 | `GET /api/plugins/telemetry/DEVICE/{id}/values/timeseries?keys=...` | telemetry, intent-specific keys |
 | `GET /api/plugins/telemetry/DEVICE/{id}/values/attributes/{CLIENT_SCOPE\|SERVER_SCOPE}` | attributes |
 | `GET /api/alarms/DEVICE/{id}` | alarms |

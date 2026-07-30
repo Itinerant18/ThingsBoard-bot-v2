@@ -286,8 +286,16 @@ class UserAwareThingsBoardClient:
 
     async def tenant_users(self, page_size: int = 100) -> Any:
         """Every user in the tenant. ThingsBoard returns 403 unless the CALLER really
-        is a tenant admin, which is what makes it safe to call on their behalf."""
-        return await fetch_all_pages(self._get, "/api/tenant/users", page_size)
+        is a tenant admin, which is what makes it safe to call on their behalf.
+
+        The path is /api/user/users, NOT /api/tenant/users. ThingsBoard routes the
+        latter as /api/tenant/{tenantId}/users and tries to parse "users" as the id,
+        so every call died with 400 "Invalid UUID string: users" — 72 of the 769 FAQ
+        questions returned HTTP 500. docs/API-TB.md documented the wrong path (the
+        same way it did for /api/alarms/DEVICE/{id}) and the unit test stubs this
+        method, so nothing on the green path ever issued the real request.
+        """
+        return await fetch_all_pages(self._get, "/api/user/users", page_size)
 
     async def all_alarms(
         self,

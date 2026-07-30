@@ -98,3 +98,24 @@ async def test_alarm_history_requests_any_status_and_paginates(
     assert [row["page"] for row in body["data"]] == [0, 1]
     assert all(params["searchStatus"] == "ANY" for params in seen)
     assert all(params["sortProperty"] == "createdTime" for params in seen)
+
+
+@pytest.mark.asyncio
+async def test_tenant_users_uses_the_user_users_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # /api/tenant/users routes as /api/tenant/{tenantId}/users, so ThingsBoard tried
+    # to parse "users" as a UUID and returned 400 "Invalid UUID string: users". Every
+    # user-directory question for a tenant admin became an HTTP 500 — 72 of 769 in the
+    # 2026-07-30 audit. test_user_directory.py stubs tenant_users() itself, so no test
+    # ever issued the real request; this one pins the path.
+    client = object.__new__(UserAwareThingsBoardClient)
+    seen: list[str] = []
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        seen.append(path)
+        return {"data": [{"email": "a@b.c"}], "hasNext": False}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    await client.tenant_users(page_size=100)
+
+    assert seen == ["/api/user/users"]
+    assert not any("/api/tenant/users" in p for p in seen)
