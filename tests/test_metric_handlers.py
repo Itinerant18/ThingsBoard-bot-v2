@@ -54,7 +54,10 @@ def make_ctx(prefix: str | None = "BOI", token: str | None = "user-token") -> Re
         user_token=token,
     )
     tb = SimpleNamespace(settings=None)
-    return RequestContext(tenant=tenant, db=SimpleNamespace(), redis=SimpleNamespace(), tb=tb)  # type: ignore[arg-type]
+    # db=None, not SimpleNamespace(): these handlers take the no-hierarchy path, and a
+    # namespace that answers every attribute silently passes an `is not None` guard
+    # and then blows up on .execute().
+    return RequestContext(tenant=tenant, db=None, redis=SimpleNamespace(), tb=tb)  # type: ignore[arg-type]
 
 
 def make_handler(scoped: ScopedBranches, client: FakeClient) -> MetricHandler:

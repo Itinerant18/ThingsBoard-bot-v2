@@ -35,6 +35,7 @@ from app.query.disclosure import REFUSAL
 from app.query.fleet_health import aggregate_fleet_health, format_fleet_health
 from app.query.hierarchy_answers import (
     area_device_filter,
+    find_area,
     format_hierarchy_answer,
     load_scoped_tree,
 )
@@ -251,6 +252,37 @@ class DeviceInventory:
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
+        # The question may name an AREA rather than a branch. area_device_filter cannot
+        # help: it only engages when the question also says "zone"/"region"/"ZO", and
+        # people do not talk that way — "Is there a NASIK branch active?" names the ZO
+        # NASIK zone while calling it a branch. Six such questions were answered with
+        # the full 98-branch dump, NASIK among the names.
+        # This is the fallback handler, so matching here catches them regardless of how
+        # the extractor classified the question.
+        tree = (
+            await load_scoped_tree(
+                ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
+            )
+            if ctx.db is not None
+            else None
+        )
+        area = find_area(tree, intent.raw_question) if tree is not None else None
+        if tree is not None and area is not None and not area.is_leaf:
+            root = tree.root
+            if root is None or area.node_id != root.node_id:
+                under = tree.descendant_leaves(area.node_id)
+                listed = ", ".join(node.display_name for node in under[:10])
+                more = " (showing first 10)" if len(under) > 10 else ""
+                return Answer(
+                    f"Yes — {area.display_name} is in your authorized scope, with "
+                    f"{len(under)} branch(es): {listed}{more}.",
+                    {
+                        "area": area.display_name,
+                        "branches": [node.display_name for node in under],
+                        "count": len(under),
+                    },
+                    [{"type": "hierarchy", "resource": "scoped-branches"}],
+                )
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""
