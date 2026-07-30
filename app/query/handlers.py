@@ -29,7 +29,7 @@ from app.query.audit import (
     normalize_entries,
     window_bounds,
 )
-from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet
+from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet, rank_cctv_branches
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.disclosure import REFUSAL
 from app.query.fleet_health import (
@@ -393,6 +393,17 @@ class CctvFleet:
         # paths the parsers read only exist after expansion.
         expanded = {device_id: expand_containers(raw) for device_id, raw in states.items()}
         fleet = aggregate_cctv(expanded)
+        # Same pattern as FleetHealth: rank the per-branch rows the fleet summary was
+        # already holding, before falling through to the descriptive answer.
+        ranked = rank_cctv_branches(fleet, intent.raw_question)
+        if ranked is not None:
+            sentence, rows = ranked
+            named = _scoped_to(intent, requested, None)
+            return Answer(
+                f"{named} — {sentence}" if named else sentence,
+                {"ranked_branches": rows},
+                [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+            )
         text = format_cctv_fleet(fleet, intent.raw_question)
         scoped_to = _scoped_to(intent, requested, None)
         if scoped_to:

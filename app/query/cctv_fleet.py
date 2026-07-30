@@ -10,6 +10,7 @@ which keeps the scope decision in one place (resolved_scope) rather than duplica
 it per report.
 """
 
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -240,6 +241,81 @@ def _silent_suffix(fleet: FleetCctv) -> str:
     if not count:
         return ""
     return f" {count} scoped branch(es) returned no NVR data and are excluded from these figures."
+
+
+# --- Superlative ranking ----------------------------------------------------
+#
+# Same diagnosis as FleetHealth: "Which branch has the most cameras deployed?" was
+# answered with the per-branch recording list, which is real data in an order nobody
+# asked for. FleetCctv.branches has carried the per-branch counts all along —
+# _worst_first already sorts one of them — so this only picks the column the question
+# names and takes the top row. Deterministic sort, no LLM pass.
+#
+# Deliberately NOT handled: "most Critical risk cameras". Nothing in this module or
+# cctv.py defines a risk grade, so ranking on it would mean inventing the definition
+# and presenting the result as measured.
+
+_CCTV_MAX = ("most", "highest", "largest", "greatest", "maximum")
+_CCTV_MIN = ("fewest", "lowest", "least", "smallest", "minimum")
+
+# (question pattern, row attribute, noun). Order matters: "cameras not recording"
+# must be tested before the bare "cameras" deployment match.
+_CCTV_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    (r"not recording|without footage|zero (?:days|footage)", "not_recording", "channels not recording"),
+    (r"non-?compliant", "not_recording", "non-compliant channels"),
+    (r"compliant", "compliant", "compliant channels"),
+    (r"recording", "recording", "recording channels"),
+    (r"channels?", "total_channels", "channels"),
+    (r"cameras?", "cameras_configured", "cameras"),
+)
+
+
+def rank_cctv_branches(fleet: FleetCctv, question: str) -> tuple[str, list[dict[str, object]]] | None:
+    """(sentence, ranked rows) when the question asks which branch leads on a column.
+
+    None when it does not, so every existing CCTV answer is untouched.
+    """
+    text = question.lower()
+    if "branch" not in text:
+        return None
+    wants_max = any(w in text for w in _CCTV_MAX)
+    wants_min = any(w in text for w in _CCTV_MIN)
+    if wants_max == wants_min:  # neither, or a question asking for both
+        return None
+
+    column = noun = None
+    for pattern, attr, label in _CCTV_COLUMNS:
+        if re.search(pattern, text):
+            column, noun = attr, label
+            break
+    if column is None:
+        return None
+
+    candidates = [b for b in fleet.reporting if getattr(b, column, 0) or wants_min]
+    if not candidates:
+        return None
+    # Branch name as tiebreak so the same question always names the same branch.
+    candidates.sort(key=lambda b: (getattr(b, column), b.branch), reverse=wants_max)
+    top = candidates[0]
+    rows = [
+        {
+            "branch": b.branch,
+            "cameras_configured": b.cameras_configured,
+            "total_channels": b.total_channels,
+            "recording": b.recording,
+            "not_recording": b.not_recording,
+            "compliant": b.compliant,
+        }
+        for b in candidates[:10]
+    ]
+    label = "most" if wants_max else "fewest"
+    sentence = (
+        f"{top.branch} has the {label} {noun}: {getattr(top, column)}"
+        f" of {top.total_channels} channel(s)."
+        if column != "cameras_configured"
+        else f"{top.branch} has the {label} {noun}: {top.cameras_configured}."
+    )
+    return sentence + _silent_suffix(fleet), rows
 
 
 def format_cctv_fleet(fleet: FleetCctv, question: str) -> str:

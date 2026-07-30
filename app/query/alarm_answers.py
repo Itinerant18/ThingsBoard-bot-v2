@@ -279,6 +279,24 @@ def _group_alarms(alarms: list["AlarmRecord"], dimension: str) -> dict[str, list
     return groups
 
 
+_LONGEST_RE = re.compile(
+    r"\blongest\b|\boldest\b|\bbeen (?:open|unresolved) the longest\b"
+    r"|\bhighest (?:tat|turnaround)\b|\bslowest\b"
+)
+
+
+def _age_of(alarm: 'AlarmRecord', current: datetime) -> timedelta:
+    """How long the alarm has been open, or how long it took to resolve.
+
+    AlarmRecord.duration is None while an alarm is still open, so ranking on it
+    alone silently dropped every unresolved alarm - which is exactly the population
+    "which alarm has been unresolved the longest?" is asking about.
+    """
+    if alarm.duration is not None:
+        return alarm.duration
+    return max(current - alarm.created_at, timedelta())
+
+
 def _by_named_severity(alarms: list["AlarmRecord"], text: str) -> list["AlarmRecord"]:
     """Narrow to a severity the question names.
 
@@ -479,6 +497,44 @@ def format_alarm_answer(
         types = sorted({alarm.alarm_type for alarm in selected})
         answer = "Visible alarm types: " + ", ".join(types) + "." if types else "No alarm types are visible."
         return answer, {"types": types, "alarms": _structured(selected)}
+
+    # DURATION ranking, before the count grouping below. "Which alarm type currently
+    # has the longest unresolved duration?" was matching the alarm_type dimension and
+    # ranking those groups by COUNT, so it answered "the most frequent type" to a
+    # question about time. AlarmRecord.duration already existed; nothing sorted on it.
+    if _LONGEST_RE.search(text) and selected:
+        dimension = _group_dimension(text)
+        if dimension is not None:
+            groups = _group_alarms(selected, dimension)
+            if groups:
+                winner, members = max(
+                    groups.items(), key=lambda kv: max(_age_of(a, current) for a in kv[1])
+                )
+                oldest = max(members, key=lambda a: _age_of(a, current))
+                return (
+                    (
+                        f"{winner} has the longest: "
+                        f"{_duration_text(_age_of(oldest, current))} "
+                        f"({oldest.alarm_type} at {oldest.branch}, created "
+                        f"{_time_text(oldest.created_at)})."
+                    ),
+                    {
+                        "ranked_by": "duration",
+                        "dimension": dimension.replace("_", " "),
+                        "winner": winner,
+                        "alarms": _structured(members),
+                    },
+                )
+        oldest = max(selected, key=lambda a: _age_of(a, current))
+        state = "unresolved" if oldest.active else "resolved"
+        return (
+            (
+                f"{oldest.alarm_type} at {oldest.branch} has been {state} the longest: "
+                f"{_duration_text(_age_of(oldest, current))}, created "
+                f"{_time_text(oldest.created_at)}."
+            ),
+            {"ranked_by": "duration", "alarms": _structured([oldest])},
+        )
 
     # AGGREGATION. Placed after the specific handlers above so none of them is
     # shadowed, and before the listing fallback below — which is where "how many
