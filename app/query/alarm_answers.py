@@ -23,6 +23,16 @@ class AlarmRecord:
     details: dict[str, Any]
 
     @property
+    def weekday(self) -> str:
+        """Day of the week the alarm was raised, in IST.
+
+        Not stored anywhere — derived from created_at. Reading it in UTC would file a
+        00:30 IST alarm under the previous day, which is the whole point of the
+        question that asks for it.
+        """
+        return self.created_at.astimezone(IST).strftime("%A")
+
+    @property
     def duration(self) -> timedelta | None:
         if self.ended_at is None:
             return None
@@ -213,6 +223,10 @@ def _structured(alarms: list[AlarmRecord]) -> list[dict[str, Any]]:
 # The dimensions an alarm can be grouped by. Every one is already carried on
 # AlarmRecord; only the grouping was missing.
 _DIMENSIONS: tuple[tuple[str, str], ...] = (
+    (
+        r"\bday of (?:the )?week\b|\bwhich day\b|\bper day\b|\bby day\b",
+        "weekday",
+    ),
     # Alarm TYPE was missing while branch/zone/region/severity were all present, so
     # "what is the most common alarm type?", "most frequent error type", "which
     # device category has the highest alarm rate" and six more fell past the whole

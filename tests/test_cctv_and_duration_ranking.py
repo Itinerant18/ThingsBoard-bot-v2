@@ -103,3 +103,21 @@ def test_count_ranking_still_works_for_a_most_question() -> None:
     alarms.append(_alarm("DVR/NVR OFF", "B9", 200))
     text, _ = format_alarm_answer(alarms, "What is the most common alarm type?", NOW)
     assert text.startswith("BATTERY REVERSE has the most"), text
+
+
+def test_weekday_is_a_grouping_dimension_read_in_ist() -> None:
+    from app.query.alarm_answers import _group_dimension
+
+    assert _group_dimension("which day of the week has the most alarms?") == "weekday"
+
+    # 00:30 IST on Friday is 19:00 UTC on Thursday. The operator's day is the answer.
+    late = _alarm("X", "B1", 0)
+    late = type(late)(**{**late.__dict__, "created_at": datetime(2026, 7, 30, 19, 30, tzinfo=UTC)})
+    assert late.weekday == "Friday"
+
+
+def test_most_alarms_by_weekday_names_the_day() -> None:
+    alarms = [_alarm("A", f"B{i}", 24 * 7) for i in range(3)]  # same weekday, 3 of them
+    alarms += [_alarm("B", "B9", 1)]
+    text, _ = format_alarm_answer(alarms, "Which day of the week has the most alarms?", NOW)
+    assert "has the most" in text
