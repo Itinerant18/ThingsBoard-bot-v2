@@ -413,6 +413,14 @@ def rank_branches(
     if not any(word in text for word in ("branch", "device", "site")):
         return None
 
+    # A metric this module does not hold must NOT fall through to health. "Which branch
+    # has the most alarms?" answered "SEPL-DX2 has the best overall health: 7 of 7
+    # modules healthy" — a confidently named winner for a question about something
+    # else, which is worse than the unranked list it replaced. Alarms, users and
+    # cameras are ranked elsewhere; stand down and let them.
+    if re.search(r"\balarms?\b|\bincidents?\b|\busers?\b|\bcameras?\b|\bchannels?\b", text):
+        return None
+
     # Metric first, because it decides which direction a superlative points.
     if "offline" in text or "down" in text:
         key, unit, bad = "offline", "offline", True

@@ -116,3 +116,34 @@ def test_the_note_is_silent_when_nothing_is_unplaced() -> None:
     note = _unplaced_note(ScopedBranches([], [], unplaced_devices=2))
     assert "2 device(s)" in note
     assert "hierarchy import" in note
+
+
+# --- rank_branches must not answer a question about a metric it does not hold ---
+
+
+def test_branch_ranking_stands_down_for_foreign_metrics() -> None:
+    # Live, 2026-07-31: "Which branch has the most alarms?" answered "SEPL-DX2 has the
+    # best overall health: 7 of 7 modules healthy". rank_branches fell through to
+    # health_pct for any metric it did not recognise, so an alarm question got a
+    # confidently named health winner — worse than the unranked list it replaced.
+    from app.query.fleet_health import FleetHealthSummary, rank_branches
+
+    summary = FleetHealthSummary(
+        categories={},
+        branches={
+            "BOI-A": {"Gateway": "ONLINE", "CCTV": "ONLINE"},
+            "BOI-B": {"Gateway": "OFFLINE", "CCTV": "OFFLINE"},
+        },
+        open_alerts=0,
+    )
+    for q in (
+        "Which branch has the most alarms?",
+        "Which branch has the highest alarm count in the report?",
+        "Which branch has the most users?",
+        "Which branch has the most cameras?",
+    ):
+        assert rank_branches(summary, q) is None, q
+
+    # The metrics it DOES hold still rank.
+    assert rank_branches(summary, "Which branch has the worst overall health?") is not None
+    assert rank_branches(summary, "Which branch has the most offline devices?") is not None
