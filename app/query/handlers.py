@@ -221,9 +221,7 @@ _AREA_SUPERLATIVE = re.compile(r"\bzones?\b|\bzonal\b|\bzo\b|\bregions?\b|\bnbg\
 _AREA_RANKS = re.compile(r"\bworst\b|\bbest\b|\bmost\b|\bleast\b|\bfewest\b|\bhighest\b|\blowest\b")
 
 
-async def _area_ranking(
-    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
-) -> Answer | None:
+async def area_ranking(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """"Which zone has the worst overall health?" - rank areas, not branches.
 
     The per-branch rows and the branch-to-area mapping both already existed;
@@ -235,6 +233,7 @@ async def _area_ranking(
         return None
     if not (_AREA_SUPERLATIVE.search(question) and _AREA_RANKS.search(question)):
         return None
+    scoped = await _default_scope(ctx)
 
     # Say so rather than summing something adjacent and calling it the answer.
     decline = unrecorded_metric(question)
@@ -302,9 +301,6 @@ class GlobalOverview:
                 "Your token is not mapped to a customer, so I cannot retrieve fleet data."
             )
         scoped = await self._scope_fn(ctx)
-        area_ranked = await _area_ranking(intent, ctx, scoped)
-        if area_ranked is not None:
-            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
@@ -478,9 +474,6 @@ class DeviceInventory:
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
-        area_ranked = await _area_ranking(intent, ctx, scoped)
-        if area_ranked is not None:
-            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
@@ -752,9 +745,6 @@ class HierarchyInfo:
         scoped = await self._scope_fn(ctx)
         # Fourth handler to need this. "Show me the branch report" is classified
         # hierarchy_info and got the tree summary, when it wants a number per branch.
-        area_ranked = await _area_ranking(intent, ctx, scoped)
-        if area_ranked is not None:
-            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
