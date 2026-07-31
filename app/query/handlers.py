@@ -119,6 +119,15 @@ _BRANCH_LISTING = re.compile(
 )
 
 
+# Words that make a question about a MEASUREMENT rather than the shape of the tree.
+# The hierarchy answer must stand down for these — it can count branches, not alarms.
+_ASKS_A_METRIC = re.compile(
+    r"\balarms?\b|\bincidents?\b|\bcameras?\b|\bchannels?\b|\brecording\b|\bcompliance\b"
+    r"|\bhealth\b|\boffline\b|\bonline\b|\bfaults?\b|\bfaulty\b|\buptime\b|\btat\b"
+    r"|\bperformance\b|\bbattery\b|\bvoltage\b|\btemperature\b|\bstorage\b"
+)
+
+
 async def _hierarchy_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """format_hierarchy_answer's reply, when the question is really about structure.
 
@@ -132,6 +141,14 @@ async def _hierarchy_answer(intent: ExtractedIntent, ctx: RequestContext) -> Ans
         return None
     question = intent.raw_question.lower()
     if not (_ASKS_HIERARCHY.search(question) or _BRANCH_LISTING.search(question)):
+        return None
+    # Structure only. Moving this to the chokepoint meant it began seeing EVERY
+    # question rather than only the ones routed to an inventory handler, and its
+    # trigger is broad enough to swallow metric questions that were being answered
+    # correctly elsewhere: "which branch has the highest alarm count" matches
+    # branch + count and came back "98 branch(es) in your authorized scope".
+    # A question naming a measurement is not asking about the shape of the tree.
+    if _ASKS_A_METRIC.search(question):
         return None
     scoped = await _default_scope(ctx)
     tree = await load_scoped_tree(
@@ -354,6 +371,42 @@ _ASKS_RECENTLY_ADDED = re.compile(
 )
 
 
+_RANKS_A_BRANCH = re.compile(
+    r"\bwhich branch\b.*\b(?:worst|best|most|least|fewest|highest|lowest)\b"
+    r"|\b(?:worst|best|most|least|fewest|highest|lowest)\b.*\bbranch\b"
+)
+
+
+async def _branch_ranking(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """"Which branch has the worst overall performance?" — rank the branches.
+
+    rank_branches has existed since dc51c66 but only FleetHealth could reach it, and
+    the extractor sends these to DeviceInventory, which answered with the 98-name
+    inventory dump. Runs after area_ranking, so a question naming a zone still gets
+    the zone.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix or not _RANKS_A_BRANCH.search(question):
+        return None
+    decline = unrecorded_metric(question)
+    if decline is not None:
+        return Answer(decline, {"unavailable": "metric_not_recorded"})
+    scoped = await _default_scope(ctx)
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
+    ranked = rank_branches(aggregate_fleet_health(snapshots, scoped.tb_device_ids), question)
+    if ranked is None:
+        return None
+    sentence, rows = ranked
+    return Answer(
+        sentence,
+        {"ranked_branches": rows[:10]},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
 def _ist_stamp(created_ms: int) -> str:
     """ThingsBoard's epoch-millis createdTime, in the timezone operators read."""
     return datetime.fromtimestamp(created_ms / 1000, UTC).astimezone(IST).strftime(
@@ -491,6 +544,9 @@ async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer 
     ranked = await area_ranking(intent, ctx)
     if ranked is not None:
         return ranked
+    branch_ranked = await _branch_ranking(intent, ctx)
+    if branch_ranked is not None:
+        return branch_ranked
     for candidate in (
         _geo_answer,
         _recently_added,

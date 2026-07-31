@@ -74,3 +74,36 @@ def test_recently_added_trigger_in_both_directions() -> None:
         "which branch has the most cameras?",
     ):
         assert not _ASKS_RECENTLY_ADDED.search(q), q
+
+
+def test_hierarchy_stands_down_for_metric_questions() -> None:
+    # Moving _hierarchy_answer to the chokepoint meant it saw EVERY question, and its
+    # trigger is broad enough to swallow measurements: "which branch has the highest
+    # alarm count" matched branch + count and came back "98 branch(es) in your
+    # authorized scope", losing an answer AlarmDetail was giving correctly.
+    from app.query.handlers import _ASKS_A_METRIC, _ASKS_HIERARCHY, _BRANCH_LISTING
+
+    def hierarchy_fires(q: str) -> bool:
+        q = q.lower()
+        matched = bool(_ASKS_HIERARCHY.search(q) or _BRANCH_LISTING.search(q))
+        return matched and not _ASKS_A_METRIC.search(q)
+
+    # Structure questions still reach it.
+    for q in ("How many branches are under the EAST zone?", "List all branches in the system"):
+        assert hierarchy_fires(q), q
+    # Measurements do not.
+    for q in (
+        "Which branch has the highest alarm count in the report?",
+        "Which FGMO region has the most alarms?",
+        "Which zone has the worst recording compliance?",
+    ):
+        assert not hierarchy_fires(q), q
+
+
+def test_branch_ranking_trigger() -> None:
+    from app.query.handlers import _RANKS_A_BRANCH
+
+    for q in ("which branch has the worst overall performance?",
+              "which branch has the best overall performance?"):
+        assert _RANKS_A_BRANCH.search(q), q
+    assert not _RANKS_A_BRANCH.search("how many branches are there?")
