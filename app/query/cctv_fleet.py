@@ -270,6 +270,21 @@ _CCTV_COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def branch_recording_rows(fleet: FleetCctv) -> list[dict[str, object]]:
+    """Per-branch recording counts, in the shape area_rollup can sum."""
+    return [
+        {
+            "branch": b.branch,
+            "cameras_configured": b.cameras_configured,
+            "total_channels": b.total_channels,
+            "recording": b.recording,
+            "not_recording": b.not_recording,
+            "compliant": b.compliant,
+        }
+        for b in fleet.reporting
+    ]
+
+
 def rank_cctv_branches(fleet: FleetCctv, question: str) -> tuple[str, list[dict[str, object]]] | None:
     """(sentence, ranked rows) when the question asks which branch leads on a column.
 

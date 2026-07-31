@@ -22,6 +22,7 @@ from app.query.answer_support import (
     resolve_subsystem_alarm,
     resolve_subsystem_fault,
 )
+from app.query.area_rollup import area_of_branch, rank_areas, roll_up, unrecorded_metric
 from app.query.audit import (
     AuditScope,
     filter_entries,
@@ -29,12 +30,18 @@ from app.query.audit import (
     normalize_entries,
     window_bounds,
 )
-from app.query.cctv_fleet import aggregate_cctv, format_cctv_fleet, rank_cctv_branches
+from app.query.cctv_fleet import (
+    aggregate_cctv,
+    branch_recording_rows,
+    format_cctv_fleet,
+    rank_cctv_branches,
+)
 from app.query.contracts import Answer, ExtractedIntent, RequestContext
 from app.query.disclosure import REFUSAL
 from app.query.fleet_health import (
     _LISTING_RE,
     aggregate_fleet_health,
+    branch_rows,
     category_listing,
     format_fleet_health,
     normalize_category,
@@ -210,6 +217,57 @@ async def _per_branch_counts(
     )
 
 
+_AREA_SUPERLATIVE = re.compile(r"\bzones?\b|\bzonal\b|\bzo\b|\bregions?\b|\bnbg\b|\bfgmo\b|\bcircles?\b")
+_AREA_RANKS = re.compile(r"\bworst\b|\bbest\b|\bmost\b|\bleast\b|\bfewest\b|\bhighest\b|\blowest\b")
+
+
+async def _area_ranking(
+    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
+) -> Answer | None:
+    """"Which zone has the worst overall health?" - rank areas, not branches.
+
+    The per-branch rows and the branch-to-area mapping both already existed;
+    nothing joined them. No ThingsBoard call is added: this reads the same fleet
+    snapshot the health and CCTV answers read.
+    """
+    question = intent.raw_question.lower()
+    if ctx.db is None or not ctx.tenant.prefix:
+        return None
+    if not (_AREA_SUPERLATIVE.search(question) and _AREA_RANKS.search(question)):
+        return None
+
+    # Say so rather than summing something adjacent and calling it the answer.
+    decline = unrecorded_metric(question)
+    if decline is not None:
+        return Answer(decline, {"unavailable": "metric_not_recorded"})
+
+    tree = await load_scoped_tree(
+        ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
+    )
+    if not tree.nodes:
+        return None
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    area_of = area_of_branch(tree, intent.raw_question)
+
+    snapshots = {device_id: build_snapshot(raw) for device_id, raw in states.items()}
+    rows = branch_rows(aggregate_fleet_health(snapshots, scoped.tb_device_ids))
+    if normalize_category(None, question) == "cctv" or "camera" in question or "record" in question:
+        expanded = {device_id: expand_containers(raw) for device_id, raw in states.items()}
+        rows = branch_recording_rows(aggregate_cctv(expanded))
+
+    ranked = rank_areas(roll_up(rows, area_of), intent.raw_question)
+    if ranked is None:
+        return None
+    sentence, area_rows = ranked
+    return Answer(
+        sentence,
+        {"ranked_areas": area_rows[:20]},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -244,6 +302,9 @@ class GlobalOverview:
                 "Your token is not mapped to a customer, so I cannot retrieve fleet data."
             )
         scoped = await self._scope_fn(ctx)
+        area_ranked = await _area_ranking(intent, ctx, scoped)
+        if area_ranked is not None:
+            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
@@ -417,6 +478,9 @@ class DeviceInventory:
                 {"map_markers": markers},
                 [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
             )
+        area_ranked = await _area_ranking(intent, ctx, scoped)
+        if area_ranked is not None:
+            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
@@ -688,6 +752,9 @@ class HierarchyInfo:
         scoped = await self._scope_fn(ctx)
         # Fourth handler to need this. "Show me the branch report" is classified
         # hierarchy_info and got the tree summary, when it wants a number per branch.
+        area_ranked = await _area_ranking(intent, ctx, scoped)
+        if area_ranked is not None:
+            return area_ranked
         per_branch = await _per_branch_counts(intent, ctx, scoped)
         if per_branch is not None:
             return per_branch
