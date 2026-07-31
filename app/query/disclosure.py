@@ -30,7 +30,14 @@ import re
 _CREDENTIAL_RE = re.compile(
     r"\bpasswords?\b|\bpasswd\b|\bpassphrase\b|\bcredentials?\b|\bsecrets?\b"
     r"|\bapi[- ]?keys?\b|\baccess tokens?\b|\bbearer\b|\bprivate keys?\b"
-    r"|\bcertificates?\b|\bpem\b|\bssh keys?\b|\blogin details?\b",
+    r"|\bcertificates?\b|\bpem\b|\bssh keys?\b|\blogin details?\b"
+    # dexter_config is a device attribute carrying a modem_parameter block with
+    # user_name, password, client_id and access_token alongside the harmless
+    # brand/branch. Nothing reads it today, so asking for it was safe BY ACCIDENT —
+    # it fell through to a device count. The panel-brand answer added below reads
+    # that attribute, so from now on the raw object is one bug away from an answer.
+    # Refuse the container by name; the brand question is answered without it.
+    r"|\bdexter[_ ]?config\b|\bmodem[_ ]?param(?:eter)?s?\b|\bmodem (?:user|login)\b",
     re.IGNORECASE,
 )
 

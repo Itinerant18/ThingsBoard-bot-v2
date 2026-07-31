@@ -2,6 +2,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any, ClassVar, Protocol
 
 from app.auth.scope_resolver import resolved_scope
@@ -13,7 +14,7 @@ from app.normalization import build_snapshot
 from app.normalization.flatten import expand_containers, request_keys
 from app.normalization.snapshot import BranchSnapshot
 from app.query import cctv, derived, history
-from app.query.alarm_answers import AlarmRecord, format_alarm_answer, normalize_alarm
+from app.query.alarm_answers import IST, AlarmRecord, format_alarm_answer, normalize_alarm
 from app.query.answer_support import (
     LADDER_KEYS,
     first_non_blank,
@@ -347,6 +348,132 @@ async def area_ranking(intent: ExtractedIntent, ctx: RequestContext) -> Answer |
     )
 
 
+_ASKS_RECENTLY_ADDED = re.compile(
+    r"\b(?:last|latest|newest|recently|most recent)\b.{0,40}\b(?:device|added|provisioned|onboarded|installed)\b"
+    r"|\b(?:device|devices)\b.{0,30}\b(?:recently|newly)\b.{0,20}\b(?:added|provisioned|onboarded)\b"
+)
+
+
+def _ist_stamp(created_ms: int) -> str:
+    """ThingsBoard's epoch-millis createdTime, in the timezone operators read."""
+    return datetime.fromtimestamp(created_ms / 1000, UTC).astimezone(IST).strftime(
+        "%Y-%m-%d %H:%M IST"
+    )
+
+
+async def _recently_added(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """"What was the last device added?" - from createdTime, already in the payload.
+
+    ThingsBoard returns createdTime on every device object and the client already
+    sorts by it in five places; nothing read the value. Fetched with the CALLER's
+    token and intersected with the resolved scope, so it cannot widen access.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix or not _ASKS_RECENTLY_ADDED.search(question):
+        return None
+    if not ctx.tenant.user_token:
+        return None
+    identity = await caller_identity(ctx.tb.settings, ctx.tenant.user_token, ctx.redis)
+    if not identity.customer_id:
+        return None
+    scoped = await _default_scope(ctx)
+    allowed = set(scoped.tb_device_ids)
+    client = UserAwareThingsBoardClient(ctx.tb.settings, ctx.tenant.user_token)
+    try:
+        body = await client.devices(identity.customer_id)
+    finally:
+        await client.close()
+    rows = body.get("data", []) if isinstance(body, dict) else body
+    devices: list[tuple[int, str]] = [
+        (int(row["createdTime"]), str(row.get("name") or ""))
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict)
+        and str((row.get("id") or {}).get("id")) in allowed
+        and row.get("createdTime")
+    ]
+    if not devices:
+        return None
+    devices.sort(reverse=True)
+    structured = [
+        {"name": name, "created": _ist_stamp(created)} for created, name in devices[:20]
+    ]
+    # "Which devices were recently added" wants several; "what was the LAST device
+    # added" wants one. Both phrasings appear in the FAQ.
+    if re.search(r"\b(?:which|list)\b", question) and not re.search(
+        r"\b(?:the last|latest|newest)\b", question
+    ):
+        listed = "; ".join(f"{name} ({_ist_stamp(created)})" for created, name in devices[:10])
+        return Answer(
+            f"Most recently added device(s) in your scope: {listed}.",
+            {"recently_added": structured},
+            [{"type": "thingsboard-devices", "resource": "scoped-branches"}],
+        )
+    newest_ms, newest_name = devices[0]
+    return Answer(
+        f"The most recently added device in your scope is {newest_name}, "
+        f"created {_ist_stamp(newest_ms)}.",
+        {"recently_added": structured},
+        [{"type": "thingsboard-devices", "resource": "scoped-branches"}],
+    )
+
+
+_ASKS_PANEL_BRAND = re.compile(r"\b(?:panel|integration|integrated with|configured with)\b")
+_NAMES_A_BRAND = re.compile(r"\b(amc|dsc|trisim|seple)\b", re.IGNORECASE)
+
+
+async def _panel_brand(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """Branches whose panel integration is a named brand.
+
+    dexter_config.brand is already in the fleet snapshot (fetch_device_fields pulls
+    every attribute scope, and snapshot._JSON_PARENTS expands the container), so no
+    ThingsBoard call is added.
+
+    SECURITY: only brand and branch are read. dexter_config also carries
+    modem_parameter with user_name, password, client_id and access_token, and the
+    raw object must never reach an answer. Asking for the container by name is
+    refused upstream by disclosure._CREDENTIAL_RE.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix or not _ASKS_PANEL_BRAND.search(question):
+        return None
+    named = _NAMES_A_BRAND.search(question)
+    if named is None:
+        return None
+    wanted = named.group(1).upper()
+    scoped = await _default_scope(ctx)
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    matches: list[dict[str, Any]] = []
+    seen_brands: set[str] = set()
+    for raw in states.values():
+        expanded = expand_containers(raw)
+        brand = expanded.get("dexter_config.brand")
+        if not brand:
+            continue
+        brand_text = str(brand).strip().upper()
+        seen_brands.add(brand_text)
+        if brand_text == wanted:
+            branch = str(expanded.get("dexter_config.branch") or build_snapshot(raw).identity.branch_name or "")
+            matches.append({"branch": branch, "brand": brand_text})
+    if not matches:
+        # Honest decline, same pattern as SLA and risk grade. Naming what IS present
+        # keeps it useful instead of a dead end.
+        present = ", ".join(sorted(seen_brands)) or "none"
+        return Answer(
+            f"No device in your scope reports a {wanted} panel integration. "
+            f"The panel brands recorded across your branches are: {present}.",
+            {"brand": wanted, "matches": 0, "brands_present": sorted(seen_brands)},
+            [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+    listed = ", ".join(sorted({str(m["branch"]) for m in matches if m["branch"]})[:15])
+    return Answer(
+        f"{len(matches)} branch(es) report a {wanted} panel integration: {listed}.",
+        {"brand": wanted, "matches": len(matches), "branches": matches[:50]},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
 async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """Answers that belong to no single handler, tried before dispatch.
 
@@ -364,7 +491,14 @@ async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer 
     ranked = await area_ranking(intent, ctx)
     if ranked is not None:
         return ranked
-    for candidate in (_geo_answer, _per_branch_counts, _category_listing, _hierarchy_answer):
+    for candidate in (
+        _geo_answer,
+        _recently_added,
+        _panel_brand,
+        _per_branch_counts,
+        _category_listing,
+        _hierarchy_answer,
+    ):
         answer = await candidate(intent, ctx)
         if answer is not None:
             return answer
