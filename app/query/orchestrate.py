@@ -22,7 +22,7 @@ from app.query.handlers import (
     MetricHandler,
     UnavailableTelemetry,
     UserDirectory,
-    area_ranking,
+    shared_answer,
 )
 from app.query.uuids import is_uuid as _is_uuid
 
@@ -145,16 +145,15 @@ class QueryOrchestrator:
                 intent, device_id=remembered.device_id, node_name=remembered.branch_name
             )
 
-        # Zone and region ranking, BEFORE handler dispatch. Wired into three handlers
-        # it still missed the questions the extractor routes to CctvFleet, AlarmDetail
-        # or MetricHandler — "which FGMO region has the worst recording compliance?"
-        # got the fleet CCTV summary, and "most Critical risk cameras" was answered
-        # with an alarm count instead of reaching the "no risk grade is recorded"
-        # decline. Same reasoning as the credential guard above: behaviour that
-        # belongs to every question cannot live inside one of eight handlers.
-        area_answer = await area_ranking(intent, ctx)
-        if area_answer is not None:
-            return area_answer
+        # Answers belonging to no single handler, BEFORE dispatch: hierarchy, area
+        # ranking, per-branch counts, subsystem listings, coordinates. Each was wired
+        # into whichever handler happened to receive it, and which handler that is is
+        # not stable - "where are the branches located geographically?" answered
+        # correctly in one run and fell through in the next.
+        # See docs/ARCHITECTURE-chokepoint.md.
+        shared = await shared_answer(intent, ctx)
+        if shared is not None:
+            return shared
 
         answer: Answer | None = None
         for handler in self.handlers:

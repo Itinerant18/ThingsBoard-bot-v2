@@ -239,13 +239,17 @@ async def test_device_inventory_answers_map_markers(monkeypatch: pytest.MonkeyPa
         }
 
     monkeypatch.setattr(handlers, "load_fleet_states", fake_states)
-    handler = DeviceInventory(
-        scope_fn=_scoped_fn(ScopedBranches(["BOI-TARAKESHWAR"], ["d1"]))
+    # The map answer moved OUT of DeviceInventory to the orchestrator chokepoint: the
+    # same question reached GlobalOverview on a later run and fell through, because
+    # which handler the extractor picks is not stable. Test it where it now lives.
+    monkeypatch.setattr(
+        handlers, "_default_scope", _scoped_fn(ScopedBranches(["BOI-TARAKESHWAR"], ["d1"]))
     )
-    answer = await handler.handle(
+    answer = await handlers._geo_answer(
         ExtractedIntent(name="device_inventory", raw_question="Which branch is visible on the map?"),
         make_ctx(),
     )
+    assert answer is not None
     assert "BOI-TARAKESHWAR (ONLINE)" in answer.text
     assert answer.structured["map_markers"][0]["latitude"] == 22.88
 

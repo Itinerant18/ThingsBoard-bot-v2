@@ -118,9 +118,7 @@ _BRANCH_LISTING = re.compile(
 )
 
 
-async def _hierarchy_answer(
-    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
-) -> Answer | None:
+async def _hierarchy_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """format_hierarchy_answer's reply, when the question is really about structure.
 
     Zone and region questions reach three different handlers depending on how the
@@ -134,6 +132,7 @@ async def _hierarchy_answer(
     question = intent.raw_question.lower()
     if not (_ASKS_HIERARCHY.search(question) or _BRANCH_LISTING.search(question)):
         return None
+    scoped = await _default_scope(ctx)
     tree = await load_scoped_tree(
         ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
     )
@@ -143,9 +142,7 @@ async def _hierarchy_answer(
     return Answer(text, structured, [{"type": "hierarchy", "resource": "scoped-branches"}])
 
 
-async def _category_listing(
-    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
-) -> Answer | None:
+async def _category_listing(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """"Show me all IAS devices" — the branches where one subsystem is deployed.
 
     Reached from the inventory handlers, which is where the extractor sends these.
@@ -157,6 +154,7 @@ async def _category_listing(
         return None
     if normalize_category(None, question) is None or not _LISTING_RE.search(question):
         return None
+    scoped = await _default_scope(ctx)
     states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
     if not states:
         return None
@@ -188,9 +186,90 @@ _ASKS_PER_BRANCH = re.compile(
 )
 
 
-async def _per_branch_counts(
-    intent: ExtractedIntent, ctx: RequestContext, scoped: ScopedBranches
-) -> Answer | None:
+async def _geo_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """Branch coordinates, or the map view.
+
+    Lifted out of DeviceInventory. The same question reached GlobalOverview on a later
+    run and fell through, because which handler the extractor picks is not stable.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix or not _ASKS_GEO.search(question):
+        return None
+    scoped = await _default_scope(ctx)
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    markers: list[dict[str, Any]] = []
+    for device_id, raw in states.items():
+        lat = first_non_blank(raw, "lat1", "lat")
+        lon = first_non_blank(raw, "lon1", "lon")
+        try:
+            latitude = float(lat) if lat is not None else None
+            longitude = float(lon) if lon is not None else None
+        except (TypeError, ValueError):
+            continue
+        if latitude is None or longitude is None:
+            continue
+        snapshot = build_snapshot(raw)
+        markers.append(
+            {
+                "device_id": device_id,
+                "branch": snapshot.identity.branch_name
+                or snapshot.identity.technical_id
+                or device_id,
+                "latitude": latitude,
+                "longitude": longitude,
+                "status": snapshot.gateway.state.value,
+            }
+        )
+    if not markers:
+        return Answer(
+            "No branch with current map coordinates is visible in your authorized scope.",
+            {"map_markers": []},
+            [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+    suffix = " (showing first 20)" if len(markers) > 20 else ""
+    if _ASKS_COORDS.search(question):
+        # 51 of 98 branches report 20.5937, 78.9629 — the geographic centre of India,
+        # ThingsBoard's default when a device has no real position. Listing it as the
+        # branch's location invents data, so the branches that carry a position are
+        # separated from the ones that do not.
+        # ponytail: "shared by more than 5 branches" identifies the default without
+        # hardcoding it, so it holds for a tenant whose default differs. Tighten if a
+        # bank genuinely has 6 branches at one address.
+        tally = Counter((m["latitude"], m["longitude"]) for m in markers)
+        placed = [m for m in markers if tally[(m["latitude"], m["longitude"])] <= 5]
+        unplaced = len(markers) - len(placed)
+        if not placed:
+            return Answer(
+                f"None of the {len(markers)} branches in your scope carries its own "
+                "coordinates — they all report the same default position, so I cannot "
+                "give you a per-branch location.",
+                {"map_markers": markers, "placed": 0, "unplaced": unplaced},
+                [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+            )
+        listed = "; ".join(
+            f"{m['branch']} {m['latitude']}, {m['longitude']}" for m in placed[:20]
+        )
+        more = " (showing first 20)" if len(placed) > 20 else ""
+        tail = (
+            f" The other {unplaced} report a shared default position rather than their "
+            "own, so no coordinate is recorded for them."
+            if unplaced
+            else ""
+        )
+        return Answer(
+            f"Coordinates for {len(placed)} branch(es): {listed}{more}.{tail}",
+            {"map_markers": markers, "placed": len(placed), "unplaced": unplaced},
+            [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+        )
+    summary = ", ".join(f"{marker['branch']} ({marker['status']})" for marker in markers[:20])
+    return Answer(
+        f"Branches visible on the map: {summary}{suffix}.",
+        {"map_markers": markers},
+        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
+    )
+
+
+async def _per_branch_counts(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """Modules deployed at each branch.
 
     aggregate_fleet_health already walks every branch and records its modules while
@@ -198,6 +277,7 @@ async def _per_branch_counts(
     """
     if not ctx.tenant.prefix or not _ASKS_PER_BRANCH.search(intent.raw_question.lower()):
         return None
+    scoped = await _default_scope(ctx)
     states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
     if not states:
         return None
@@ -267,6 +347,30 @@ async def area_ranking(intent: ExtractedIntent, ctx: RequestContext) -> Answer |
     )
 
 
+async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """Answers that belong to no single handler, tried before dispatch.
+
+    ARCHITECTURAL INVARIANT (docs/ARCHITECTURE-chokepoint.md): behaviour more than one
+    handler could need lives HERE, not in a handler. Four regressions came from
+    breaking it - resolved_scope, the credential guard, area_ranking, and the geo
+    block, which answered correctly in one run and fell through in the next because
+    the extractor routed the question to a different handler.
+
+    Order is specific-to-general. A question that names an area AND asks to rank wants
+    the ranking, not the hierarchy summary that would also match it.
+    """
+    if not ctx.tenant.prefix:
+        return None
+    ranked = await area_ranking(intent, ctx)
+    if ranked is not None:
+        return ranked
+    for candidate in (_geo_answer, _per_branch_counts, _category_listing, _hierarchy_answer):
+        answer = await candidate(intent, ctx)
+        if answer is not None:
+            return answer
+    return None
+
+
 def _scoped_to(intent: ExtractedIntent, requested: str | None, area_name: str | None) -> str | None:
     """The place an answer was narrowed to, for echoing back to the caller.
 
@@ -301,15 +405,6 @@ class GlobalOverview:
                 "Your token is not mapped to a customer, so I cannot retrieve fleet data."
             )
         scoped = await self._scope_fn(ctx)
-        per_branch = await _per_branch_counts(intent, ctx, scoped)
-        if per_branch is not None:
-            return per_branch
-        hierarchy = await _hierarchy_answer(intent, ctx, scoped)
-        if hierarchy is not None:
-            return hierarchy
-        listing = await _category_listing(intent, ctx, scoped)
-        if listing is not None:
-            return listing
         count = len(scoped.tb_device_ids)
         states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
         if not states:
@@ -395,97 +490,6 @@ class DeviceInventory:
                 {"active_regions": [], "count": 0, "customer_wide": True},
                 [{"type": "authorization-scope", "resource": "current-user"}],
             )
-        # Widened beyond the literal word "map": "what is the latitude and longitude
-        # for each branch" and "where are the branches located geographically" both
-        # went to the hierarchy summary instead, which names no coordinate at all.
-        if _ASKS_GEO.search(question):
-            states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
-            markers = []
-            for device_id, raw in states.items():
-                lat = first_non_blank(raw, "lat1", "lat")
-                lon = first_non_blank(raw, "lon1", "lon")
-                try:
-                    latitude = float(lat) if lat is not None else None
-                    longitude = float(lon) if lon is not None else None
-                except (TypeError, ValueError):
-                    continue
-                if latitude is None or longitude is None:
-                    continue
-                snapshot = build_snapshot(raw)
-                markers.append(
-                    {
-                        "device_id": device_id,
-                        "branch": snapshot.identity.branch_name
-                        or snapshot.identity.technical_id
-                        or device_id,
-                        "latitude": latitude,
-                        "longitude": longitude,
-                        "status": snapshot.gateway.state.value,
-                    }
-                )
-            if not markers:
-                return Answer(
-                    "No branch with current map coordinates is visible in your authorized scope.",
-                    {"map_markers": []},
-                    [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
-                )
-            suffix = " (showing first 20)" if len(markers) > 20 else ""
-            if _ASKS_COORDS.search(question):
-                # 51 of 98 branches report 20.5937, 78.9629 - the geographic centre of
-                # India, ThingsBoard's default when a device has no real position.
-                # Listing it as the branch's location is inventing data, so separate
-                # the branches that actually carry a position from the ones that do
-                # not, and say which is which.
-                # ponytail: "shared by more than 5 branches" identifies the default
-                # without hardcoding it, so it still holds for another tenant whose
-                # default differs. Tighten if a bank genuinely has 6 branches at one
-                # address.
-                tally = Counter((m["latitude"], m["longitude"]) for m in markers)
-                placed = [m for m in markers if tally[(m["latitude"], m["longitude"])] <= 5]
-                unplaced = len(markers) - len(placed)
-                if not placed:
-                    return Answer(
-                        f"None of the {len(markers)} branches in your scope carries its own "
-                        "coordinates - they all report the same default position, so I "
-                        "cannot give you a per-branch location.",
-                        {"map_markers": markers, "placed": 0, "unplaced": unplaced},
-                        [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
-                    )
-                listed = "; ".join(
-                    f"{m['branch']} {m['latitude']}, {m['longitude']}" for m in placed[:20]
-                )
-                more = " (showing first 20)" if len(placed) > 20 else ""
-                tail = (
-                    f" The other {unplaced} report a shared default position rather than "
-                    "their own, so no coordinate is recorded for them."
-                    if unplaced
-                    else ""
-                )
-                return Answer(
-                    f"Coordinates for {len(placed)} branch(es): {listed}{more}.{tail}",
-                    {"map_markers": markers, "placed": len(placed), "unplaced": unplaced},
-                    [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
-                )
-            summary = ", ".join(
-                f"{marker['branch']} ({marker['status']})" for marker in markers[:20]
-            )
-            return Answer(
-                f"Branches visible on the map: {summary}{suffix}.",
-                {"map_markers": markers},
-                [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
-            )
-        per_branch = await _per_branch_counts(intent, ctx, scoped)
-        if per_branch is not None:
-            return per_branch
-        # Same delegation GlobalOverview makes: the extractor sends structure
-        # questions to whichever handler it feels like, so both ask the hierarchy
-        # before answering with an inventory.
-        hierarchy = await _hierarchy_answer(intent, ctx, scoped)
-        if hierarchy is not None:
-            return hierarchy
-        listing = await _category_listing(intent, ctx, scoped)
-        if listing is not None:
-            return listing
         names = scoped.branch_node_ids
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""
@@ -743,11 +747,6 @@ class HierarchyInfo:
                 "Your token is not mapped to a customer, so I cannot retrieve the hierarchy."
             )
         scoped = await self._scope_fn(ctx)
-        # Fourth handler to need this. "Show me the branch report" is classified
-        # hierarchy_info and got the tree summary, when it wants a number per branch.
-        per_branch = await _per_branch_counts(intent, ctx, scoped)
-        if per_branch is not None:
-            return per_branch
         tree = await load_scoped_tree(
             ctx.db, ctx.tenant.prefix, scoped.branch_node_ids, scoped.tb_device_ids
         )
