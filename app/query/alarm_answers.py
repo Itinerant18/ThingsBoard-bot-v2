@@ -359,9 +359,19 @@ def _asks_for_resolved(text: str) -> bool:
 
 
 def format_alarm_answer(
-    alarms: list[AlarmRecord], question: str, now: datetime | None = None
+    alarms: list[AlarmRecord],
+    question: str,
+    now: datetime | None = None,
+    truncated: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """Format active/history/TAT/severity alarm questions without LLM guessing."""
+    """Format active/history/TAT/severity alarm questions without LLM guessing.
+
+    `truncated` says the alarm read hit its page cap. Every count derived from it
+    is then a lower bound, and saying so is the difference between an answer and a
+    wrong measurement.
+    """
+    # A count off a capped read is not the count. Phrase it as the bound it is.
+    at_least = "at least " if truncated else ""
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=UTC)
@@ -569,7 +579,10 @@ def format_alarm_answer(
             winner, members = (min if least else max)(
                 groups.items(), key=lambda kv: len(kv[1])
             )
-            answer = f"{winner} has the {'fewest' if least else 'most'}: {len(members)} alarm(s)"
+            answer = (
+                f"{winner} has the {'fewest' if least else 'most'}: "
+                f"{at_least}{len(members)} alarm(s)"
+            )
             answer += f", out of {len(groups)} with any." if len(groups) > 1 else "."
             return answer, {"grouped": group_counts, "alarms": _structured(members)}
         ranked_groups = sorted(group_counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -582,8 +595,12 @@ def format_alarm_answer(
 
     if _wants_a_count(text):
         return (
-            f"{len(selected)} matching alarm(s).",
-            {"count": len(selected), "alarms": _structured(selected)},
+            f"{at_least}{len(selected)} matching alarm(s).",
+            {
+                "count": len(selected),
+                "count_is_lower_bound": truncated,
+                "alarms": _structured(selected),
+            },
         )
 
     if not selected:

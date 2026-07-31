@@ -76,6 +76,18 @@ async def resolved_scope(
         )
         permitted = [d for d in local.tb_device_ids if str(d) in allowed]
         permitted_nodes = []
+    # The reverse direction of the ACL narrowing: devices ThingsBoard authorizes
+    # that no local leaf claims. Those are invisible to every answer, and silence
+    # about them reads as "you have 98" when the caller holds 100.
+    unplaced = len(allowed - {str(d) for d in local.tb_device_ids})
+    if unplaced:
+        logger.warning(
+            "[TB-ACL] %d device(s) authorized by ThingsBoard have no hierarchy leaf "
+            "for %s; they cannot be named in any answer",
+            unplaced,
+            tenant.subject or tenant.customer_id,
+        )
+
     dropped = len(local.tb_device_ids) - len(permitted)
     if dropped:
         # Expected whenever a prefix spans multiple TB customers; worth seeing,
@@ -110,7 +122,11 @@ async def resolved_scope(
     # Zone-level questions are unaffected: containers live in the hierarchy tree and
     # are rebuilt from whichever leaves survive, so a zone the caller still holds
     # devices under keeps its name.
-    return ScopedBranches(branch_node_ids=permitted_nodes, tb_device_ids=permitted)
+    return ScopedBranches(
+        branch_node_ids=permitted_nodes,
+        tb_device_ids=permitted,
+        unplaced_devices=unplaced,
+    )
 
 
 __all__ = ["PermissionCheckUnavailable", "resolved_scope"]

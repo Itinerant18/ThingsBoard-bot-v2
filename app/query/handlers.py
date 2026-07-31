@@ -530,6 +530,23 @@ async def _panel_brand(intent: ExtractedIntent, ctx: RequestContext) -> Answer |
     )
 
 
+def _unplaced_note(scoped: ScopedBranches) -> str:
+    """Disclose devices ThingsBoard authorizes that the hierarchy cannot place.
+
+    Verified in the run-6 audit: ThingsBoard authorized 100 devices and the answer
+    said 98, with nothing to indicate the difference. Not naming an unplaceable device
+    is correct; implying it does not exist is not.
+    """
+    if not scoped.unplaced_devices:
+        return ""
+    count = scoped.unplaced_devices
+    return (
+        f" A further {count} device(s) are authorized for you in ThingsBoard but are "
+        "not present in your branch hierarchy, so I cannot name or report on them — "
+        "they are missing from the hierarchy import, not from your access."
+    )
+
+
 async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """Answers that belong to no single handler, tried before dispatch.
 
@@ -614,18 +631,20 @@ class GlobalOverview:
             f"You have {count} device(s) in your authorized scope: "
             f"{online} online, {offline} offline"
         )
+        # Same disclosure as the inventory answer; this handler states its own count.
         if other:
             text += f", {other} in other states"
         if count > len(states):
             text += f" ({count - len(states)} with no recent data)"
         return Answer(
-            text + ".",
+            text + "." + _unplaced_note(scoped),
             {
                 "device_count": count,
                 "online": online,
                 "offline": offline,
                 "other": other,
                 "no_data": count - len(states),
+                "unplaced_devices": scoped.unplaced_devices,
             },
             [{"type": "fleet-snapshot", "resource": "scoped-branches"}],
         )
@@ -687,8 +706,9 @@ class DeviceInventory:
         shown = ", ".join(names[:10]) or "none"
         suffix = " (showing first 10)" if len(names) > 10 else ""
         return Answer(
-            f"You have {len(names)} branch device(s) in scope: {shown}{suffix}.",
-            {"devices": names},
+            f"You have {len(names)} branch device(s) in scope: {shown}{suffix}."
+            + _unplaced_note(scoped),
+            {"devices": names, "unplaced_devices": scoped.unplaced_devices},
             [{"type": "hierarchy", "resource": "scoped-branches"}],
         )
 
@@ -1223,7 +1243,9 @@ class AlarmDetail:
                     seen.add(alarm.alarm_id)
                     alarms.append(alarm)
 
-        text, structured = format_alarm_answer(alarms, intent.raw_question)
+        text, structured = format_alarm_answer(
+            alarms, intent.raw_question, truncated=truncated
+        )
         scoped_to = _scoped_to(intent, requested, area_name)
         if scoped_to:
             text = f"{scoped_to} — {text}"

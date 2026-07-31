@@ -151,6 +151,11 @@ def extract_region(claims: dict[str, object]) -> RegionalScope:
 class ScopedBranches:
     branch_node_ids: list[str]
     tb_device_ids: list[str]
+    # Devices ThingsBoard authorizes that the local hierarchy has no leaf for, so
+    # they cannot be named or placed. Zero for every caller whose hierarchy import
+    # is complete. Non-zero means the answer is short and the operator should be
+    # told, not left to infer it from a number that looks whole.
+    unplaced_devices: int = 0
 
 
 async def branch_scope(
