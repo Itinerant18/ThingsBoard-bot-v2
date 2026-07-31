@@ -122,9 +122,12 @@ _BRANCH_LISTING = re.compile(
 # Words that make a question about a MEASUREMENT rather than the shape of the tree.
 # The hierarchy answer must stand down for these — it can count branches, not alarms.
 _ASKS_A_METRIC = re.compile(
-    r"\balarms?\b|\bincidents?\b|\bcameras?\b|\bchannels?\b|\brecording\b|\bcompliance\b"
-    r"|\bhealth\b|\boffline\b|\bonline\b|\bfaults?\b|\bfaulty\b|\buptime\b|\btat\b"
-    r"|\bperformance\b|\bbattery\b|\bvoltage\b|\btemperature\b|\bstorage\b"
+    r"\balarms?\b|\bincidents?\b|\balerts?\b|\bcameras?\b|\bchannels?\b|\brecording\b"
+    r"|\bcompliance\b|\bhealth\b|\boffline\b|\bonline\b|\bfaults?\b|\bfaulty\b"
+    r"|\buptime\b|\btat\b|\bperformance\b|\bbattery\b|\bvoltage\b|\btemperature\b"
+    # "users" is a metric here too: "which zone has the most users" is a count of
+    # people, which the hierarchy cannot give — it counts branches.
+    r"|\bstorage\b|\busers?\b|\blogins?\b|\bconcentration\b"
 )
 
 
