@@ -54,6 +54,13 @@ from app.query.hierarchy_answers import (
     load_scoped_tree,
 )
 from app.query.key_profiles import keys_for
+from app.query.uptime import (
+    ASKS_FAULT_HISTORY,
+    ASKS_UPTIME,
+    build_report,
+    format_fault_answer,
+    format_uptime_answer,
+)
 from app.query.users import format_user_answer, normalize_users
 from app.query.uuids import is_uuid as _is_uuid
 from app.tasks.live_sync import load_fleet_states
@@ -547,6 +554,34 @@ def _unplaced_note(scoped: ScopedBranches) -> str:
     )
 
 
+async def _uptime_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
+    """Monthly uptime and fault history from the mainDevices*/mainCCTVFault attributes.
+
+    These arrive in the fleet snapshot already — fetch_device_fields pulls every
+    attribute scope — so nothing new is fetched here. Until now nothing read them and
+    every uptime question was declined as data we do not hold. We do hold it, for part
+    of the fleet, and the answer says which part.
+    """
+    question = intent.raw_question.lower()
+    if not ctx.tenant.prefix:
+        return None
+    if not (ASKS_UPTIME.search(question) or ASKS_FAULT_HISTORY.search(question)):
+        return None
+    scoped = await _default_scope(ctx)
+    states = await load_fleet_states(ctx.redis, ctx.tenant.prefix, scoped.tb_device_ids)
+    if not states:
+        return None
+    report = build_report(states)
+    for formatter in (format_uptime_answer, format_fault_answer):
+        result = formatter(report, intent.raw_question)
+        if result is not None:
+            text, structured = result
+            return Answer(
+                text, structured, [{"type": "fleet-snapshot", "resource": "scoped-branches"}]
+            )
+    return None
+
+
 async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer | None:
     """Answers that belong to no single handler, tried before dispatch.
 
@@ -568,6 +603,7 @@ async def shared_answer(intent: ExtractedIntent, ctx: RequestContext) -> Answer 
     if branch_ranked is not None:
         return branch_ranked
     for candidate in (
+        _uptime_answer,
         _geo_answer,
         _recently_added,
         _panel_brand,
@@ -876,7 +912,11 @@ class UnavailableTelemetry:
 
     # What the question asked for -> what we would need to start collecting.
     _SUBJECTS = (
-        ("uptime", "per-device uptime history"),
+        # "uptime" is NO LONGER declined here: mainDevicesOnTimeData carries monthly
+        # uptime and downtime minutes, and _uptime_answer runs at the chokepoint
+        # before dispatch. It still declines honestly when no branch in scope
+        # publishes the attribute, which is the accurate statement rather than a
+        # blanket "we do not hold it".
         ("disk utilization", "S-Vault disk usage"),
         ("s-vault", "S-Vault contents"),
         ("svault", "S-Vault contents"),

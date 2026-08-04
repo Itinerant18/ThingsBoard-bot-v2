@@ -170,7 +170,20 @@ def _as_json(value: object) -> Any:
 
 # Mapper's nested-container search (§10). NOTE: different parent list + different
 # return semantics from the resolver's _find_in_nested_json — kept separate.
-_JSON_PARENTS = ("rock", "dexter_config", "cameraStatus", "gatewayStatus", "ticketStatus", "rockAI")
+_JSON_PARENTS = (
+    "rock",
+    "dexter_config",
+    "cameraStatus",
+    "gatewayStatus",
+    "ticketStatus",
+    "rockAI",
+    # Monthly uptime and fault history. app/query/uptime.py parses these itself
+    # because their nesting is per-month rather than a flat leaf map, but they are
+    # listed here so a dotted lookup finds them like any other container.
+    "mainDevicesOnTimeData",
+    "mainDevicesFaultData",
+    "mainCCTVFaultData",
+)
 
 
 def _find_container(raw: Mapping[str, Any], *candidate_keys: str) -> Any:
